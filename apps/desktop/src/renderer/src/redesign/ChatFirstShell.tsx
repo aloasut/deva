@@ -4287,7 +4287,7 @@ function Composer({
   useEffect(() => {
     let live = true
     void window.deva?.skills
-      ?.listContext(focusRoot ?? null, owner?.id ?? null)
+      ?.listContext(focusRoot ?? null, owner?.id ?? 'general')
       .then((list) => {
         if (live) setContextSkills(list)
       })

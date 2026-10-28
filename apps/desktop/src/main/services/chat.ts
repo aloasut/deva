@@ -2311,7 +2311,9 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           parentToolId: tc.id,
           background: !!bg,
           // 子轮写入归到本次调用的 id（见执行点 owner），随父轮一起回滚。
-          recorder: args.recorder
+          recorder: args.recorder,
+          // 子智能体替主对话的角色干活：roles 可用性与角色池跟随父轮（fork 同）。
+          personaId: args.personaId ?? DEFAULT_PERSONA_ID
         })
         const aborted = sub.stopReason === 'aborted'
         const isErr = sub.stopReason === 'error' || aborted
@@ -3453,7 +3455,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     const subagentTool = buildSubagentTool()
     // 每轮定格：内置工具 + exit_plan（计划先行）+ skill（描述固定，技能清单随消息下发）+
     // run_subagent / send_to_subagent + 当前已连接 MCP 工具。exit_plan 仅主轮提供（子智能体的 buildSubagentTools 不含它）。
-    // 角色不再收窄工具可见性：所有角色均可按需调用全部工具（每个调用仍照常过同一道权限闸门，零提权）。
+    // 工具可见性：内置/动态工具全量；MCP 按对话生效角色的可用角色过滤（ext-roles，见 buildSealedTools 同款）。
     const turnTools: ToolSpec[] = [
       ...toolSpecs,
       buildPlanTool(),
@@ -3774,7 +3776,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     if (slashMatch) {
       const sendPersona = session.personaId ? getPersona(session.personaId) : null
       const loaded = loadSkillInstructionsByName(slashMatch[1], {
-        projectRoot: session.focusRoot ?? null,
+        projectRoot: session.focusRoot ?? workspaceRoot ?? null,
         personaId: sendPersona?.id ?? DEFAULT_PERSONA_ID
       })
       if (loaded) {

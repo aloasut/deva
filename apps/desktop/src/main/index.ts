@@ -103,7 +103,7 @@ function createWindow(): void {
     trafficLightPosition: { x: 9, y: 13 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      // 安全基线：见 llmdoc/platform/security-model.mdx
+      // 安全基线：见 docs/architecture/security.md
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,

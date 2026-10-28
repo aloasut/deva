@@ -9,7 +9,7 @@ import {
 } from './avatar-image'
 import { getConfig, getDevaHome, setConfig } from './config'
 import { DEFAULT_PERSONAS, LEGACY_PROMPT_HASHES, type DefaultPersona } from './default-personas'
-import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
+import { fmScalar, fmString, parseFrontmatter } from './frontmatter'
 import { pruneRoles } from './ext-roles'
 import { setSkillEnabled } from './skills'
 import { clearPersonaSkills, listPersonaSkills } from './skills'
@@ -67,11 +67,6 @@ export interface PersonaRecord {
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认（见 model-resolve.ts）。 */
   model: string
-  /**
-   * 绑定的技能（frontmatter skills，存技能 name 或 id）：非空时该角色的对话**只见**这些技能
-   * （内置元技能恒在，见 skills.ts 的 SkillQuery.bound 严格过滤）；空数组 = 不限，用全部已启用技能。
-   */
-  skills: string[]
   /** .md 正文 = 要追加进系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -90,8 +85,6 @@ export interface PersonaUpsertInput {
   avatar?: string
   tagline?: string
   model?: string
-  /** 绑定技能（name 或 id）；省略/空数组 = 不绑定（用全部已启用技能）。 */
-  skills?: string[]
   prompt?: string
   /** 可选：一并设置启用态（新建默认关）。 */
   enabled?: boolean
@@ -192,9 +185,6 @@ function parsePersona(id: string, raw: string, enabled: boolean, withImage: bool
     avatarImage: withImage ? readAvatarImage(id) : '',
     tagline: fmString(data, 'tagline'),
     model: fmString(data, 'model'),
-    skills: fmArray(data, 'skills')
-      .map((s) => s.trim())
-      .filter(Boolean),
     prompt: body.trim(),
     enabled
   }
@@ -260,7 +250,6 @@ function composePersonaMd(input: {
   avatar: string
   tagline: string
   model: string
-  skills: string[]
   prompt: string
 }): string {
   const lines = ['---', `name: ${fmScalar(input.name)}`]
@@ -269,7 +258,6 @@ function composePersonaMd(input: {
   if (input.avatar) lines.push(`avatar: ${fmScalar(input.avatar)}`)
   if (input.tagline) lines.push(`tagline: ${fmScalar(input.tagline)}`)
   if (input.model) lines.push(`model: ${fmScalar(input.model)}`)
-  if (input.skills.length) lines.push(`skills: [${input.skills.map(fmScalar).join(', ')}]`)
   lines.push('---', '', input.prompt.trim(), '')
   return lines.join('\n')
 }
@@ -287,7 +275,6 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
     avatar: (input.avatar ?? '').trim(),
     tagline: (input.tagline ?? '').trim(),
     model: (input.model ?? '').trim(),
-    skills: (input.skills ?? []).map((s) => s.trim()).filter(Boolean),
     prompt: input.prompt ?? ''
   })
 
@@ -312,8 +299,7 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
       avatarImage: readAvatarImage(id),
       tagline: (input.tagline ?? '').trim(),
       model: (input.model ?? '').trim(),
-      skills: (input.skills ?? []).map((s) => s.trim()).filter(Boolean),
-      prompt: input.prompt ?? '',
+        prompt: input.prompt ?? '',
       enabled: input.enabled === true
     }
   )

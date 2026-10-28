@@ -584,10 +584,13 @@ function effectiveSkills(q?: SkillQuery): SkillRecord[] {
   const owned = listPersonaSkills(q.personaId)
   if (!owned.length) return system
   const names = new Set(owned.map((s) => s.name.toLowerCase()))
+  const builtinNames = new Set(BUILTIN_SKILLS.map((s) => s.name.toLowerCase()))
   return [
     ...BUILTIN_SKILLS,
     ...owned,
-    ...system.filter((s) => s.source !== 'builtin' && !names.has(s.name.toLowerCase()))
+    ...system.filter(
+      (s) => s.source !== 'builtin' && !names.has(s.name.toLowerCase()) && !builtinNames.has(s.name.toLowerCase())
+    )
   ]
 }
 
@@ -759,7 +762,10 @@ export function importSkillFromFile(filePath: string, targetDir = skillsDir()): 
 /** 导入到某角色的私有技能池（与全局导入同一套校验与限额；角色池恒启用）。 */
 export function importSkillToPersona(personaId: string, filePath: string): SkillImportResult {
   if (!isSafeId(personaId)) return { ok: false, error: 'import-failed' }
-  return importSkillFromFile(filePath, personaSkillsDir(personaId))
+  // 限额前置：扫描期的上限会静默跳过多余/超大技能，导入时先给明确错误码
+  if (listPersonaSkills(personaId).length >= MAX_LOOSE_SKILLS) return { ok: false, error: 'too-many-files' }
+  const probe = importSkillFromFile(filePath, personaSkillsDir(personaId))
+  return probe
 }
 
 /** 删除角色池里的一个技能：整个文件夹移系统回收站；已不在（外部手动删掉）视为成功。 */
@@ -938,7 +944,9 @@ export function registerSkillsIpc(getWindow: () => BrowserWindow | null): void {
     (_e, focusRoot: string | null, personaId: string | null): SkillRecord[] =>
       listEffectiveSkills({
         projectRoot: typeof focusRoot === 'string' && focusRoot ? focusRoot : null,
-        personaId: typeof personaId === 'string' && personaId ? personaId : null
+        // 未绑定对话的生效角色是默认角色 general（与 chat 发送口径一致；'general' = DEFAULT_PERSONA_ID，
+        // 不直接 import 以免 skills→personas 循环依赖）
+        personaId: typeof personaId === 'string' && personaId ? personaId : 'general'
       })
   )
 }
