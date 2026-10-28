@@ -326,10 +326,15 @@ export interface SkillRecord {
   metadata: Record<string, string>
   instructions: string
   enabled: boolean
-  /** 可用角色（角色 id）；null = 全部角色。内置技能恒为 null。 */
+  /** 可用角色（角色 id）；null = 全部角色。内置/角色池/项目技能恒开放（见 services/skills.ts）。 */
   roles: string[] | null
-  /** 来源：`builtin` = 应用内置（不可删/编辑、恒启用）；`custom` = 用户创建/导入。 */
-  source: 'builtin' | 'custom'
+  /**
+   * 来源：`builtin` = 应用内置（不可删/编辑、恒启用）；`custom` = 用户创建/导入；
+   * `project` = 项目自带（不经本面板）；`persona` = 角色级技能（角色编辑器管理面）。
+   */
+  source: 'builtin' | 'custom' | 'project' | 'persona'
+  /** source='persona' 时的属主角色 id。 */
+  personaId?: string
 }
 
 /** 技能导入结果（skills:import 回传；error 为稳定错误码，渲染层据此本地化）。 */
@@ -357,6 +362,8 @@ export interface PersonaRecord {
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
   model: string
+  /** 私有技能池数量（只读派生，仅列表 IPC 填，花名册角标用）。 */
+  skillCount?: number
   /** 正文 = 追加进主智能体系统提示词的内容。 */
   prompt: string
   enabled: boolean
@@ -845,6 +852,18 @@ const api = {
     remove: (id: string): Promise<{ ok: boolean }> => ipcRenderer.invoke('skills:remove', id),
     setEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
       ipcRenderer.invoke('skills:set-enabled', id, enabled),
+    // 角色级技能池（personas/skills/<角色id>/，归角色私有、仅其对话生效，恒启用）：编辑器管理面。
+    listPersona: (personaId: string): Promise<SkillRecord[]> =>
+      ipcRenderer.invoke('skills:list-persona', personaId),
+    importPersona: (personaId: string): Promise<SkillImportResult> =>
+      ipcRenderer.invoke('skills:import-persona', personaId),
+    removePersona: (personaId: string, id: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke('skills:remove-persona', personaId, id),
+    /** 本对话生效技能全集（四来源合并 + 全局技能按角色过滤）：/ 联想与主进程同语义。 */
+    listContext: (
+      focusRoot: string | null,
+      personaId: string | null
+    ): Promise<SkillRecord[]> => ipcRenderer.invoke('skills:list-context', focusRoot, personaId),
     /** 设置可用角色（角色 id 数组；null = 全部角色）。内置技能不可设置。 */
     setRoles: (id: string, roles: string[] | null): Promise<{ ok: boolean }> =>
       ipcRenderer.invoke('skills:set-roles', id, roles),

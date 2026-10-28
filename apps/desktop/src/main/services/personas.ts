@@ -8,11 +8,12 @@ import {
   writeAvatarImage as writeAvatarImageFile
 } from './avatar-image'
 import { getConfig, getDevaHome, setConfig } from './config'
+import { DEFAULT_PERSONAS, LEGACY_PROMPT_HASHES, type DefaultPersona } from './default-personas'
+import { fmArray, fmScalar, fmString, parseFrontmatter } from './frontmatter'
 import { pruneRoles } from './ext-roles'
 import { setSkillEnabled } from './skills'
+import { clearPersonaSkills, listPersonaSkills } from './skills'
 import { setEnabled as setMcpEnabled } from './mcp-config'
-import { DEFAULT_PERSONAS, LEGACY_PROMPT_HASHES, type DefaultPersona } from './default-personas'
-import { fmScalar, fmString, parseFrontmatter } from './frontmatter'
 import { reassignTaskPersona } from './tasks'
 
 /**
@@ -66,9 +67,19 @@ export interface PersonaRecord {
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认（见 model-resolve.ts）。 */
   model: string
+  /**
+   * 绑定的技能（frontmatter skills，存技能 name 或 id）：非空时该角色的对话**只见**这些技能
+   * （内置元技能恒在，见 skills.ts 的 SkillQuery.bound 严格过滤）；空数组 = 不限，用全部已启用技能。
+   */
+  skills: string[]
   /** .md 正文 = 要追加进系统提示词的内容。 */
   prompt: string
   enabled: boolean
+  /**
+   * 私有技能池数量（**只读派生字段**，与 avatarImage 同一按需模式：仅 IPC 出口填，
+   * 花名册角标用；主进程内部调用恒 undefined）。真源是 personas/skills/<id>/ 的技能数。
+   */
+  skillCount?: number
 }
 
 export interface PersonaUpsertInput {
@@ -79,6 +90,8 @@ export interface PersonaUpsertInput {
   avatar?: string
   tagline?: string
   model?: string
+  /** 绑定技能（name 或 id）；省略/空数组 = 不绑定（用全部已启用技能）。 */
+  skills?: string[]
   prompt?: string
   /** 可选：一并设置启用态（新建默认关）。 */
   enabled?: boolean
@@ -179,6 +192,9 @@ function parsePersona(id: string, raw: string, enabled: boolean, withImage: bool
     avatarImage: withImage ? readAvatarImage(id) : '',
     tagline: fmString(data, 'tagline'),
     model: fmString(data, 'model'),
+    skills: fmArray(data, 'skills')
+      .map((s) => s.trim())
+      .filter(Boolean),
     prompt: body.trim(),
     enabled
   }
@@ -205,7 +221,10 @@ export function listPersonas(withImages = false): PersonaRecord[] {
     if (!isSafeId(id)) continue
     try {
       const raw = readFileSync(personaFile(id), 'utf8')
-      out.push(parsePersona(id, raw, map[id] === true, withImages))
+      const rec = parsePersona(id, raw, map[id] === true, withImages)
+      // 角标数量与头像同走 IPC 出口按需派生（主进程内部调用不扫池，省白做的功）。
+      if (withImages) rec.skillCount = listPersonaSkills(id).length
+      out.push(rec)
     } catch {
       /* 读失败 → 跳过该文件 */
     }
@@ -241,6 +260,7 @@ function composePersonaMd(input: {
   avatar: string
   tagline: string
   model: string
+  skills: string[]
   prompt: string
 }): string {
   const lines = ['---', `name: ${fmScalar(input.name)}`]
@@ -249,6 +269,7 @@ function composePersonaMd(input: {
   if (input.avatar) lines.push(`avatar: ${fmScalar(input.avatar)}`)
   if (input.tagline) lines.push(`tagline: ${fmScalar(input.tagline)}`)
   if (input.model) lines.push(`model: ${fmScalar(input.model)}`)
+  if (input.skills.length) lines.push(`skills: [${input.skills.map(fmScalar).join(', ')}]`)
   lines.push('---', '', input.prompt.trim(), '')
   return lines.join('\n')
 }
@@ -266,6 +287,7 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
     avatar: (input.avatar ?? '').trim(),
     tagline: (input.tagline ?? '').trim(),
     model: (input.model ?? '').trim(),
+    skills: (input.skills ?? []).map((s) => s.trim()).filter(Boolean),
     prompt: input.prompt ?? ''
   })
 
@@ -290,25 +312,11 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
       avatarImage: readAvatarImage(id),
       tagline: (input.tagline ?? '').trim(),
       model: (input.model ?? '').trim(),
+      skills: (input.skills ?? []).map((s) => s.trim()).filter(Boolean),
       prompt: input.prompt ?? '',
       enabled: input.enabled === true
     }
   )
-}
-
-/** 技能 / MCP 的可用角色里剔除 keep 不认的角色；指定的角色都没了的项改回所有角色并停用（MCP 随之断开）。 */
-function pruneExtRoles(keep: (personaId: string) => boolean): void {
-  const orphaned = pruneRoles(keep)
-  for (const id of orphaned.skills) setSkillEnabled(id, false)
-  for (const id of orphaned.mcp) setMcpEnabled(id, false)
-}
-
-/** 启动时清理：可用角色里已不存在的角色（手改配置、旧版本留下的）一并按删除角色处理。 */
-export function pruneOrphanExtRoles(): void {
-  const ids = new Set(listPersonas().map((p) => p.id))
-  // 种子之后至少有默认角色：读出空表多半是角色目录读失败，这时清理会把所有指定了角色的项都停掉，宁可跳过。
-  if (!ids.size) return
-  pruneExtRoles((p) => ids.has(p))
 }
 
 export function deletePersona(id: string): void {
@@ -320,10 +328,16 @@ export function deletePersona(id: string): void {
   }
   // 连自定义头像一起删：不留孤儿文件（旧版 makeId 会复用已删角色的 id，遗留的图曾挂到新角色脸上）。
   clearAvatarImage(id)
+  // 连私有技能池一起清（移回收站，可还原）；id 永不复用，清失败残留也无害。
+  void clearPersonaSkills(id)
+  // 可用角色配置里剔除本角色；指定给它的技能 / MCP 因此一个角色都不剩的，改回所有角色并停用。
+  const orphaned = pruneRoles((pid) => pid !== id)
+  for (const sid of orphaned.skills) setSkillEnabled(sid, false)
+  for (const mid of orphaned.mcp) {
+    setMcpEnabled(mid, false)
+  }
   // 绑定该角色的定时任务改由默认角色 Deva 执行（连同其独占对话），任务照常运行。
   reassignTaskPersona(id, DEFAULT_PERSONA_ID)
-  // 从技能 / MCP 的可用角色里剔除；只给它用的那些改回所有角色并停用。
-  pruneExtRoles((p) => p !== id)
   const map = enabledMap()
   if (id in map) {
     delete map[id]
@@ -494,4 +508,14 @@ export function registerPersonasIpc(): void {
     clearAvatarImage(String(id ?? ''))
     return { ok: true }
   })
+}
+
+/** 启动清理：可用角色里已不存在的角色剔除；都没了的项改回所有角色并停用（供 index.ts 在 MCP 自动连接前调用）。 */
+export function pruneOrphanExtRoles(): void {
+  const known = new Set(listPersonas().map((p) => p.id))
+  const orphaned = pruneRoles((id) => known.has(id))
+  for (const sid of orphaned.skills) setSkillEnabled(sid, false)
+  for (const mid of orphaned.mcp) {
+    setMcpEnabled(mid, false)
+  }
 }

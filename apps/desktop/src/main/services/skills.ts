@@ -16,23 +16,26 @@ import { allowsPersona, getRoles, setRoles } from './ext-roles'
 import { fmArray, fmMap, fmScalar, fmString, parseFrontmatter } from './frontmatter'
 
 /**
- * 技能（Skills）服务：发现 / 解析 / 读写 `~/.deva/skills/<id>/SKILL.md`（全局，与项目无关）。
+ * 技能（Skills）服务：发现 / 解析 / 读写技能目录下的 `<id>/SKILL.md`。
+ * 两个来源：全局 `~/.deva/skills/`（用户自建/导入，启用态入 config.json）；
+ * 项目 `<项目根>/.deva/skills/`（随挂载的工作区并入，恒启用，见 listSkills）。
  *
  * 设计（对标 Claude Code 的渐进式披露）：
  * - **身份 = 文件夹名（id），显示名 = frontmatter `name`**。文件夹名恒定不改（改显示名只重写 frontmatter），
  *   故重命名不触发目录搬迁，UI 的「id 稳定 / name 可编辑」模型天然成立。
- * - 启用态**不入 SKILL.md**（避免手改正文时误触），集中存 `config.json` 的 `skills.enabled[id]`。
+ * - 启用态**不入 SKILL.md**（避免手改正文时误触），集中存 `config.json` 的 `skills.enabled[id]`（仅全局技能）。
  *   **映射里没有即启用**（`!== false`）：模型用 write_file / 解压直接落盘的技能文件夹无需再开一道开关；
  *   只有用户在「扩展」页关掉的才显式存 `false` 并保持关闭。
  * - `SKILL.md` = frontmatter（name/description/trigger/allowed-tools）+ 正文（instructions，即完整操作指令）。
  *
  * 运行期（chat.ts 同进程直接调用，无需 IPC）：
- * - `enabledSkillSummaries()`：把「已启用」技能的 name+description 注入系统提示词（便宜的清单段）。
- * - `loadSkillInstructionsByName()`：命中 `skill` 工具或 `/name` 显式触发时，才加载完整正文。
- * - 两者都按对话绑定的角色过滤：技能可设为只给指定角色用（可用角色存 config.json，见 ext-roles.ts）。
+ * - `enabledSkillSummaries(q?)`：把「当前生效」技能的 name+description 交随消息下发的清单（便宜的摘要）。
+ *   q.projectRoot 并入项目技能；q.bound 按角色绑定的技能集合严格过滤（内置元技能恒在）。
+ * - `loadSkillInstructionsByName(name, q?)`：命中 `skill` 工具或 `/name` 显式触发时，才加载完整正文。
  *
  * 文件读写不设路径限制：技能目录可被 read_file / write_file / 命令直接读写（多文件技能的子文档按需
- * read_file，安装可下载解压到技能目录）。技能目录有监听（`startSkillsWatcher`），渲染层的技能清单随之实时更新。
+ * read_file，安装可下载解压到技能目录）。全局技能目录有监听（`startSkillsWatcher`），渲染层的技能清单
+ * 随之实时更新；项目技能无监听，但运行期每次现读磁盘（chat.ts 每步现算清单），轮中装删下一步即生效。
  * `allowed-tools` 只作**建议文本**注入，绝不触碰权限闸门（evaluate）——技能不能借此自我提权。
  */
 
@@ -53,10 +56,16 @@ export interface SkillRecord {
   /** SKILL.md 正文 = 完整操作指令。 */
   instructions: string
   enabled: boolean
-  /** 可用角色（角色 id）；null = 全部角色。内置技能恒为 null。见 ext-roles.ts。 */
+  /** 可用角色（角色 id）；null = 全部角色。仅对全局技能（custom）有意义——内置/角色池/项目技能恒开放。见 ext-roles.ts。 */
   roles: string[] | null
-  /** 来源：`builtin` = 随应用二进制内置（不落盘、不可删/编辑、恒启用）；`custom` = 用户创建/导入。 */
-  source: 'builtin' | 'custom'
+  /**
+   * 来源：`builtin` = 随应用二进制内置（不落盘、不可删/编辑、恒启用）；`custom` = 用户创建/导入（全局目录）；
+   * `project` = 当前挂载项目自带的（`<项目根>/.deva/skills/`，恒启用、无 UI 开关，属项目数据）；
+   * `persona` = 角色级技能（`personas/skills/<角色id>/`，归该角色私有、仅其对话生效，恒启用）。
+   */
+  source: 'builtin' | 'custom' | 'project' | 'persona'
+  /** source='persona' 时的属主角色 id（其余来源缺省）。 */
+  personaId?: string
 }
 
 /** 导入结果（供 skills:import IPC 回传渲染层）。 */
@@ -257,12 +266,29 @@ const IMPORT_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 const IMPORT_MAX_FILES = 200
 const IMPORT_MAX_SINGLE_BYTES = 10 * 1024 * 1024
 
+// 项目 / 角色技能限额（项目技能来自仓库内容、角色池可能积累很多：防塞爆清单与上下文，宁缺勿滥）。
+const MAX_LOOSE_SKILLS = 50
+const MAX_LOOSE_SKILL_MD_BYTES = 512 * 1024
+
 /**
  * 技能根目录（绝对路径）。chat.ts 把它写进系统提示词与 skill 工具结果，供模型读写多文件技能；
  * 进程内恒定（DEVA_HOME 只在启动时读取），不破坏 §4.18 的提示缓存前缀稳定性。
  */
 export function skillsDir(): string {
   return join(getDevaHome(), 'skills')
+}
+
+/** 项目技能根目录：`<项目根>/.deva/skills`（挂载工作区时并入技能清单）。 */
+export function projectSkillsDir(root: string): string {
+  return join(root, '.deva', 'skills')
+}
+
+/**
+ * 角色级技能根目录：`<DEVA_HOME>/personas/skills/<角色id>/`。归角色私有（仅该角色的对话生效），
+ * 与系统技能池分开存放；目录的存在本身就是「绑定」——无需 frontmatter 登记。
+ */
+export function personaSkillsDir(personaId: string): string {
+  return join(getDevaHome(), 'personas', 'skills', personaId)
 }
 
 function skillFile(id: string): string {
@@ -288,8 +314,8 @@ function isSafeId(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(id) && id !== '.' && id !== '..'
 }
 
-/** 据显示名生成安全、唯一的文件夹 id。 */
-function makeId(name: string): string {
+/** 据显示名生成安全、唯一的文件夹 id（在指定目标目录内查重）。 */
+function makeId(name: string, dir: string): string {
   const slug = name
     .trim()
     .toLowerCase()
@@ -300,13 +326,18 @@ function makeId(name: string): string {
   let id = base
   let n = 2
   // 回避已存在目录与保留 id（防用户以「create skill」等撞内置身份）。
-  while (existsSync(join(skillsDir(), id)) || RESERVED_IDS.has(id)) {
+  while (existsSync(join(dir, id)) || RESERVED_IDS.has(id)) {
     id = `${base}-${n++}`
   }
   return id
 }
 
-function parseSkill(id: string, raw: string, enabled: boolean): SkillRecord {
+function parseSkill(
+  id: string,
+  raw: string,
+  enabled: boolean,
+  source: 'custom' | 'project' | 'persona'
+): SkillRecord {
   const { data, body } = parseFrontmatter(raw)
   const name = fmString(data, 'name') || id
   return {
@@ -320,40 +351,97 @@ function parseSkill(id: string, raw: string, enabled: boolean): SkillRecord {
     metadata: fmMap(data, 'metadata'),
     instructions: body.trim(),
     enabled,
-    roles: getRoles('skills', id),
-    source: 'custom'
+    roles: source === 'custom' ? getRoles('skills', id) : null,
+    source
   }
 }
 
-/** 列出所有技能（扫描 skills 目录下每个含 SKILL.md 的子目录）。解析失败的目录跳过，绝不抛错。 */
-export function listSkills(): SkillRecord[] {
-  const dir = skillsDir()
-  // 目录尚未创建（首次运行、还没建过任何自定义技能）：内置元技能是代码合成常量、永不落盘，
-  // 不依赖磁盘目录存在，故此处仍须返回它们，否则「扩展」页首启会误显空态。
-  if (!existsSync(dir)) return [...BUILTIN_SKILLS]
-  const map = enabledMap()
-  const out: SkillRecord[] = []
+/**
+ * 扫描一个「恒启用、无 config 开关」的技能目录（项目池 / 角色池共用）：
+ * 保留 id 不可被影子；超出数量 / 单个 SKILL.md 超大的跳过——宁缺勿滥。解析失败的目录跳过，绝不抛错。
+ */
+function scanLooseSkillDir(dir: string, source: 'project' | 'persona', personaId?: string): SkillRecord[] {
+  if (!existsSync(dir)) return []
   let entries: string[]
   try {
     entries = readdirSync(dir)
   } catch {
     return []
   }
+  const out: SkillRecord[] = []
   for (const id of entries) {
-    if (!isSafeId(id)) continue
-    if (RESERVED_IDS.has(id)) continue // 磁盘同名目录不得影子内置技能
-    const file = skillFile(id)
+    if (out.length >= MAX_LOOSE_SKILLS) break
+    if (!isSafeId(id) || RESERVED_IDS.has(id)) continue
+    const file = join(dir, id, 'SKILL.md')
     try {
       if (!statSync(join(dir, id)).isDirectory()) continue
-      const raw = readFileSync(file, 'utf8')
-      out.push(parseSkill(id, raw, map[id] !== false))
+      if (statSync(file).size > MAX_LOOSE_SKILL_MD_BYTES) continue
+      const rec = parseSkill(id, readFileSync(file, 'utf8'), true, source)
+      if (personaId !== undefined) rec.personaId = personaId
+      out.push(rec)
     } catch {
-      /* 无 SKILL.md / 读失败 → 跳过该目录 */
+      /* 无 SKILL.md / 读失败 / 超限 → 跳过该目录 */
     }
   }
   out.sort((a, b) => a.name.localeCompare(b.name))
-  // 内置置顶：随本列表自动流经 systemPrompt 注入 / skill 工具 / /create-skill、/create-agent 加载。
-  return [...BUILTIN_SKILLS, ...out]
+  return out
+}
+
+/** 扫描项目技能目录（`<项目根>/.deva/skills/`）。 */
+function listProjectSkills(root: string): SkillRecord[] {
+  return scanLooseSkillDir(projectSkillsDir(root), 'project')
+}
+
+/** 扫描某角色的私有技能池（`personas/skills/<角色id>/`）。 */
+export function listPersonaSkills(personaId: string): SkillRecord[] {
+  if (!isSafeId(personaId)) return []
+  return scanLooseSkillDir(personaSkillsDir(personaId), 'persona', personaId)
+}
+
+/**
+ * 列出技能。`projectRoot`（挂载的工作区根）给定时，项目技能并入并**遮蔽同名全局技能**
+ * （项目专属意图优先）；数组顺序即查找优先级：内置 → 项目 → 全局。解析失败的目录跳过，绝不抛错。
+ */
+export function listSkills(projectRoot?: string | null): SkillRecord[] {
+  // 目录尚未创建（首次运行、还没建过任何自定义技能）：内置元技能是代码合成常量、永不落盘，
+  // 不依赖磁盘目录存在，故此处仍须返回它们，否则「扩展」页首启会误显空态。
+  const dir = skillsDir()
+  const globals: SkillRecord[] = []
+  if (existsSync(dir)) {
+    const map = enabledMap()
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      entries = []
+    }
+    for (const id of entries) {
+      if (!isSafeId(id)) continue
+      if (RESERVED_IDS.has(id)) continue // 磁盘同名目录不得影子内置技能
+      const file = skillFile(id)
+      try {
+        if (!statSync(join(dir, id)).isDirectory()) continue
+        const raw = readFileSync(file, 'utf8')
+        globals.push(parseSkill(id, raw, map[id] !== false, 'custom'))
+      } catch {
+        /* 无 SKILL.md / 读失败 → 跳过该目录 */
+      }
+    }
+    globals.sort((a, b) => a.name.localeCompare(b.name))
+    // frontmatter name 撞内置技能名的全局技能不可达（内置在数组首位，查找与清单去重都先命中内置），
+    // 留着只会成为扩展页可见却永远触发不了的死技能——直接剔除。
+    const builtinNames = new Set(BUILTIN_SKILLS.map((s) => s.name.toLowerCase()))
+    const live = globals.filter((s) => !builtinNames.has(s.name.toLowerCase()))
+    if (!projectRoot) return [...BUILTIN_SKILLS, ...live]
+    const projects = listProjectSkills(projectRoot)
+    if (!projects.length) return [...BUILTIN_SKILLS, ...live]
+    const names = new Set(projects.map((s) => s.name.toLowerCase()))
+    return [...BUILTIN_SKILLS, ...projects, ...live.filter((s) => !names.has(s.name.toLowerCase()))]
+  }
+  if (!projectRoot) return [...BUILTIN_SKILLS]
+  const projects = listProjectSkills(projectRoot)
+  if (!projects.length) return [...BUILTIN_SKILLS]
+  return [...BUILTIN_SKILLS, ...projects]
 }
 
 export function getSkill(id: string): SkillRecord | null {
@@ -362,7 +450,7 @@ export function getSkill(id: string): SkillRecord | null {
   if (!isSafeId(id)) return null
   try {
     const raw = readFileSync(skillFile(id), 'utf8')
-    return parseSkill(id, raw, enabledMap()[id] !== false)
+    return parseSkill(id, raw, enabledMap()[id] !== false, 'custom')
   } catch {
     return null
   }
@@ -395,7 +483,7 @@ export function upsertSkill(input: SkillUpsertInput): SkillRecord {
   const name = (input.name || '').trim() || '未命名技能'
   let id = input.id && isSafeId(input.id) ? input.id : ''
   const isNew = !id
-  if (!id) id = makeId(name)
+  if (!id) id = makeId(name, skillsDir())
 
   const md = composeSkillMd({
     name,
@@ -467,16 +555,59 @@ export function setSkillEnabled(id: string, enabled: boolean): void {
 
 // ── 运行期（chat.ts 直接调用）───────────────────────────────────────────────
 
-/** 技能在这个角色的对话里是否可用：已启用，且可用角色含该角色（内置技能恒可用）。 */
-function usableBy(s: SkillRecord, personaId: string): boolean {
-  return s.enabled && (s.source === 'builtin' || allowsPersona('skills', s.id, personaId))
+/** 技能查询范围：决定「本轮哪些技能生效」。 */
+export interface SkillQuery {
+  /** 项目技能根（挂载的工作区根）：给定时并入项目技能并遮蔽同名全局技能；缺省只看全局。 */
+  projectRoot?: string | null
+  /**
+   * 对话生效角色 id：给定时全局技能（custom）按可用角色过滤（ext-roles，**指定给别人的技能不见**）；
+   * 内置 / 角色池 / 项目技能恒放行。null = 不按角色过滤（仅视图场景；chat 调用方恒传生效角色，
+   * 未绑定的对话传默认角色 general）。
+   */
+  personaId?: string | null
 }
 
-/** 该角色可用技能的 name+description 摘要，随消息下发给模型（渐进式披露的便宜清单）。 */
-export function enabledSkillSummaries(personaId: string): { name: string; description: string }[] {
-  return listSkills()
-    .filter((s) => usableBy(s, personaId))
-    .map((s) => ({ name: s.name, description: s.description }))
+/** 已启用技能摘要（随消息下发的清单条目；source 供 listing 标注来源）。 */
+export interface SkillSummary {
+  name: string
+  description: string
+  source: SkillRecord['source']
+}
+
+/**
+ * 本轮生效技能的全集（数组序即查找优先级）：内置 → 角色私有 → 项目 → 全局；
+ * 同名时更具体者遮蔽（角色遮项目遮全局，大小写不敏感按 name）。
+ */
+function effectiveSkills(q?: SkillQuery): SkillRecord[] {
+  const system = listSkills(q?.projectRoot)
+  if (!q?.personaId) return system
+  const owned = listPersonaSkills(q.personaId)
+  if (!owned.length) return system
+  const names = new Set(owned.map((s) => s.name.toLowerCase()))
+  return [
+    ...BUILTIN_SKILLS,
+    ...owned,
+    ...system.filter((s) => s.source !== 'builtin' && !names.has(s.name.toLowerCase()))
+  ]
+}
+
+/** 技能在该角色对话里是否可用：已启用；内置 / 角色池 / 项目技能恒可用，全局技能按可用角色（ext-roles）。 */
+function usableBy(s: SkillRecord, personaId?: string | null): boolean {
+  if (!s.enabled) return false
+  if (s.source !== 'custom' || !personaId) return true
+  return allowsPersona('skills', s.id, personaId)
+}
+
+/** 当前生效技能的 name+description 摘要（渐进式披露的便宜清单，随消息下发）。 */
+export function enabledSkillSummaries(q?: SkillQuery): SkillSummary[] {
+  return effectiveSkills(q)
+    .filter((s) => usableBy(s, q?.personaId))
+    .map((s) => ({ name: s.name, description: s.description, source: s.source }))
+}
+
+/** 当前生效技能的完整记录（四来源合并 + 全局技能按角色过滤）：输入框 / 联想与主进程同语义。 */
+export function listEffectiveSkills(q?: SkillQuery): SkillRecord[] {
+  return effectiveSkills(q).filter((s) => usableBy(s, q?.personaId))
 }
 
 /** 是否存在已启用技能（决定是否向模型提供 skill 工具）。 */
@@ -485,24 +616,34 @@ export function hasEnabledSkills(): boolean {
 }
 
 /**
- * 按显示名（大小写不敏感）加载该角色**可用**技能的完整正文（已启用且对该角色开放）。
- * 供 `skill` 工具与 `/name` 显式触发；未命中返回 null。
- * `dir` = 自定义技能的文件夹绝对路径（内置技能不落盘，无此项）：多文件技能正文里的相对路径
+ * 按显示名（大小写不敏感）加载**当前生效**技能的完整正文。
+ * 供 `skill` 工具与 `/name` 显式触发；未命中返回 null。查找顺序 = 生效集数组序
+ * （内置 → 角色私有 → 项目 → 全局，更具体者遮蔽同名）；q.bound 只过滤系统技能。
+ * `dir` = 落盘技能的文件夹绝对路径（内置技能不落盘，无此项）：多文件技能正文里的相对路径
  * 以它为基准，调用方须一并告知模型，否则子文档无从定位。
  */
 export function loadSkillInstructionsByName(
   name: string,
-  personaId: string
-): { name: string; instructions: string; dir?: string } | null {
+  q?: SkillQuery
+): { name: string; instructions: string; dir?: string; source?: 'custom' | 'project' | 'persona' } | null {
   const wanted = name.trim().toLowerCase()
   if (!wanted) return null
-  for (const s of listSkills()) {
-    if (!usableBy(s, personaId)) continue
+  for (const s of effectiveSkills(q)) {
+    if (!usableBy(s, q?.personaId)) continue
     if (s.name.toLowerCase() === wanted || s.id.toLowerCase() === wanted) {
+      const dir =
+        s.source === 'custom'
+          ? join(skillsDir(), s.id)
+          : s.source === 'project' && q?.projectRoot
+            ? join(projectSkillsDir(q.projectRoot), s.id)
+            : s.source === 'persona' && s.personaId
+              ? join(personaSkillsDir(s.personaId), s.id)
+              : undefined
       return {
         name: s.name,
         instructions: s.instructions,
-        ...(s.source === 'custom' ? { dir: join(skillsDir(), s.id) } : {})
+        ...(dir ? { dir } : {}),
+        ...(s.source !== 'builtin' ? { source: s.source } : {})
       }
     }
   }
@@ -512,20 +653,18 @@ export function loadSkillInstructionsByName(
 // ── 导入（上传 .zip / .md 创建技能）─────────────────────────────────────────
 
 /**
- * 校验并落盘一个导入的技能：frontmatter 必须含 `name`；写入 `~/.deva/skills/<id>/SKILL.md`
- * 及（可选）已过守卫的附带文件；成功后**自动启用**。运行期只注入 SKILL.md 正文，附带文件由模型
- * 按需 read_file（skill 工具结果会给出文件夹绝对路径）。
+ * 校验并落盘一个导入的技能：frontmatter 必须含 `name`；写入 `targetDir/<id>/SKILL.md`
+ * 及（可选）已过守卫的附带文件。targetDir 为全局技能目录时导入即自动启用；
+ * 角色池导入恒启用（无开关）。运行期只注入 SKILL.md 正文，附带文件由模型按需 read_file
+ * （skill 工具结果会给出文件夹绝对路径）。
  */
-function writeImportedSkill(
-  rawMd: string,
-  extra: { path: string; data: Uint8Array }[]
-): SkillImportResult {
+function writeImportedSkill(rawMd: string, extra: { path: string; data: Uint8Array }[], targetDir: string): SkillImportResult {
   const { data } = parseFrontmatter(rawMd)
   const name = fmString(data, 'name').trim()
   if (!name) return { ok: false, error: 'missing-name' }
 
-  const id = makeId(name)
-  const folder = resolve(join(skillsDir(), id))
+  const id = makeId(name, targetDir)
+  const folder = resolve(join(targetDir, id))
   try {
     mkdirSync(folder, { recursive: true })
     writeFileSync(join(folder, 'SKILL.md'), rawMd, 'utf8')
@@ -540,12 +679,12 @@ function writeImportedSkill(
     return { ok: false, error: 'write-failed' }
   }
 
-  setSkillEnabled(id, true) // 自动启用
+  if (targetDir === skillsDir()) setSkillEnabled(id, true) // 全局导入自动启用；角色池恒启用无开关
   return { ok: true, id, name }
 }
 
 /** 从 .zip 技能包导入：定位 SKILL.md（根或唯一顶层目录）+ zip-slip 守卫 + 三重限额。 */
-function importZipSkill(filePath: string): SkillImportResult {
+function importZipSkill(filePath: string, targetDir: string): SkillImportResult {
   let files: Record<string, Uint8Array>
   try {
     files = unzipSync(readFileSync(filePath))
@@ -596,24 +735,55 @@ function importZipSkill(filePath: string): SkillImportResult {
     extra.push({ path: rel, data: bytes })
   }
 
-  return writeImportedSkill(rawMd, extra)
+  return writeImportedSkill(rawMd, extra, targetDir)
 }
 
 /**
- * 导入一个技能文件：`.md`（单个 SKILL.md）或 `.zip`（技能包）。
+ * 导入一个技能文件：`.md`（单个 SKILL.md）或 `.zip`（技能包），写入 targetDir（缺省全局技能目录）。
  * 失败返回 `{ ok:false, error }`（error 为稳定错误码，渲染层据此本地化），绝不抛出。
  */
-export function importSkillFromFile(filePath: string): SkillImportResult {
+export function importSkillFromFile(filePath: string, targetDir = skillsDir()): SkillImportResult {
   try {
     const lower = filePath.toLowerCase()
     if (lower.endsWith('.md')) {
       const raw = readFileSync(filePath, 'utf8')
-      return writeImportedSkill(raw, [])
+      return writeImportedSkill(raw, [], targetDir)
     }
-    if (lower.endsWith('.zip')) return importZipSkill(filePath)
+    if (lower.endsWith('.zip')) return importZipSkill(filePath, targetDir)
     return { ok: false, error: 'unsupported-type' }
   } catch {
     return { ok: false, error: 'import-failed' }
+  }
+}
+
+/** 导入到某角色的私有技能池（与全局导入同一套校验与限额；角色池恒启用）。 */
+export function importSkillToPersona(personaId: string, filePath: string): SkillImportResult {
+  if (!isSafeId(personaId)) return { ok: false, error: 'import-failed' }
+  return importSkillFromFile(filePath, personaSkillsDir(personaId))
+}
+
+/** 删除角色池里的一个技能：整个文件夹移系统回收站；已不在（外部手动删掉）视为成功。 */
+export async function deletePersonaSkill(personaId: string, id: string): Promise<{ ok: boolean }> {
+  if (!isSafeId(personaId) || !isSafeId(id) || RESERVED_IDS.has(id)) return { ok: false }
+  const folder = join(personaSkillsDir(personaId), id)
+  if (!existsSync(folder)) return { ok: true }
+  try {
+    await shell.trashItem(folder)
+    return { ok: true }
+  } catch {
+    return { ok: false }
+  }
+}
+
+/** 删除角色的整个私有技能池（删角色时级联；失败静默——id 永不复用，残留无害）。 */
+export async function clearPersonaSkills(personaId: string): Promise<void> {
+  if (!isSafeId(personaId)) return
+  const dir = personaSkillsDir(personaId)
+  if (!existsSync(dir)) return
+  try {
+    await shell.trashItem(dir)
+  } catch {
+    /* 回收站不可用（如目录被占用）：放弃，残留无害 */
   }
 }
 
@@ -744,18 +914,45 @@ export function registerSkillsIpc(getWindow: () => BrowserWindow | null): void {
   })
   // 上传导入：原生对话框选文件（模态） → importSkillFromFile。取消返回 { ok:false, error:'cancelled' }。
   ipcMain.handle('skills:import', async (): Promise<SkillImportResult> => {
-    const win = getWindow()
-    const opts = {
-      properties: ['openFile' as const],
-      filters: [
-        { name: '技能包', extensions: ['zip', 'md'] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
-    }
-    const res = win
-      ? await dialog.showOpenDialog(win, opts)
-      : await dialog.showOpenDialog(opts)
-    if (res.canceled || !res.filePaths.length) return { ok: false, error: 'cancelled' }
-    return importSkillFromFile(res.filePaths[0])
+    const res = await pickSkillFile(getWindow)
+    if (!res) return { ok: false, error: 'cancelled' }
+    return importSkillFromFile(res)
   })
+
+  // 角色级技能池（编辑器管理面）：列 / 导入 / 删除。恒启用、仅该角色生效。
+  ipcMain.handle('skills:list-persona', (_e, personaId: string): SkillRecord[] => listPersonaSkills(personaId))
+  ipcMain.handle('skills:import-persona', async (_e, personaId: string): Promise<SkillImportResult> => {
+    if (typeof personaId !== 'string' || !personaId) return { ok: false, error: 'import-failed' }
+    const res = await pickSkillFile(getWindow)
+    if (!res) return { ok: false, error: 'cancelled' }
+    return importSkillToPersona(personaId, res)
+  })
+  ipcMain.handle(
+    'skills:remove-persona',
+    (_e, personaId: string, id: string): Promise<{ ok: boolean }> => deletePersonaSkill(personaId, id)
+  )
+
+  // 本对话生效技能全集（四来源，全局技能按角色过滤）：渲染层带上当前会话的挂载根与生效角色，与发送时同语义。
+  ipcMain.handle(
+    'skills:list-context',
+    (_e, focusRoot: string | null, personaId: string | null): SkillRecord[] =>
+      listEffectiveSkills({
+        projectRoot: typeof focusRoot === 'string' && focusRoot ? focusRoot : null,
+        personaId: typeof personaId === 'string' && personaId ? personaId : null
+      })
+  )
+}
+
+/** 原生对话框选一个技能包（.zip/.md）；取消返回 null。 */
+async function pickSkillFile(getWindow: () => BrowserWindow | null): Promise<string | null> {
+  const win = getWindow()
+  const opts = {
+    properties: ['openFile' as const],
+    filters: [
+      { name: '技能包', extensions: ['zip', 'md'] },
+      { name: '所有文件', extensions: ['*'] }
+    ]
+  }
+  const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+  return res.canceled || !res.filePaths.length ? null : res.filePaths[0]
 }

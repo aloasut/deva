@@ -77,6 +77,7 @@ import type {
   GitStatus,
   PersonaUpsertInput,
   PreviewScheduleResult,
+  SkillRecord,
   TaskRecord,
   TaskSchedule,
   TaskStatus
@@ -2241,6 +2242,7 @@ function PersonaRow({
   onDropRow: (edge: 'before' | 'after') => void
   onDragEnd: () => void
 }): React.JSX.Element {
+  const { t } = useI18n()
   // 指针在本行的上半区 → 插到本行之前；下半区 → 之后。
   const edgeAt = (e: React.DragEvent): 'before' | 'after' => {
     const r = e.currentTarget.getBoundingClientRect()
@@ -2276,6 +2278,24 @@ function PersonaRow({
         {/* 花名册只展示角色名与专长；专长未填写则整行不显示。 */}
         <div className="cf-prow__name">
           {persona.name}
+          {/* 私有技能池角标：数量来自列表 IPC 的按需派生（>0 才显示）。 */}
+          {typeof persona.skillCount === 'number' && persona.skillCount > 0 && (
+            <span
+              style={{
+                marginLeft: 6,
+                fontSize: 11,
+                opacity: 0.65,
+                border: '1px solid currentColor',
+                borderRadius: 999,
+                padding: '0 5px',
+                lineHeight: '14px',
+                verticalAlign: '1px'
+              }}
+              title={t('cf.personaSkillBadge')}
+            >
+              {persona.skillCount}
+            </span>
+          )}
         </div>
         {persona.desc && <div className="cf-prow__spec">{persona.desc}</div>}
       </div>
@@ -4262,21 +4282,35 @@ function Composer({
 
   // 指令表：渲染层自有的 /compact、/rewind 置顶，其后是本角色可用的技能（停用或不对本角色开放的主进程也不认）。
   // 同名技能会被自有指令遮蔽（渲染层先拦截），按小写名去重、保留先者，不给出点了没反应的候选。
+  // 本对话生效技能（四来源合并，全局技能按角色过滤）：/ 联想与主进程同语义（skills:list-context）。
+  const [contextSkills, setContextSkills] = useState<SkillRecord[]>([])
+  useEffect(() => {
+    let live = true
+    void window.deva?.skills
+      ?.listContext(focusRoot ?? null, owner?.id ?? null)
+      .then((list) => {
+        if (live) setContextSkills(list)
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [focusRoot, owner?.id, skills])
   const slashCommands = useMemo<SlashCommand[]>(() => {
     const out: SlashCommand[] = [
       { name: 'compact', desc: t('cf.slash.compact'), kind: 'command' },
       { name: 'rewind', desc: t('cf.slash.rewind'), kind: 'command' }
     ]
     const seen = new Set(out.map((c) => c.name.toLowerCase()))
-    for (const s of skills) {
-      if (!s.enabled) continue
+    for (const s of contextSkills) {
       const key = s.name.toLowerCase()
       if (seen.has(key)) continue
       seen.add(key)
-      out.push({ name: s.name, desc: s.desc, kind: 'skill' })
+      const tag = s.source === 'project' ? '（项目自带）' : s.source === 'persona' ? '（角色专属）' : ''
+      out.push({ name: s.name, desc: `${s.description}${tag}`, kind: 'skill' })
     }
     return out
-  }, [skills, t])
+  }, [contextSkills, t])
 
   const slashQuery = slashQueryOf(input)
   // 排序：前缀命中优先于子串命中，组内保持原序（/compact 在前，技能按扩展页顺序）。
@@ -4486,7 +4520,7 @@ function Composer({
   const isToken = (name: string, whole: string): boolean => {
     const n = name.toLowerCase()
     if ((n === 'compact' || n === 'rewind') && noAtts && whole.toLowerCase() === `/${n}`) return true
-    return skills.some((s) => s.enabled && (s.name.toLowerCase() === n || s.id.toLowerCase() === n))
+    return contextSkills.some((s) => s.name.toLowerCase() === n || s.id.toLowerCase() === n)
   }
 
   const composer = useComposerEditor({
@@ -4501,7 +4535,7 @@ function Composer({
 
   // 判定依据（技能启停、有无附件）变了而文本没变：重新识别一次开头指令。
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => composer.refreshToken(), [skills, noAtts])
+  useEffect(() => composer.refreshToken(), [contextSkills, noAtts])
 
   // 草稿按会话分开：进入会话（含挂载）换上它的草稿，没有则清空；离开（切换会话或卸载，如进入选择删除）时
   // 把当前内容存到它名下。撤销历史一并清掉，免得撤销把别的会话的内容找回来。用 layout effect，切过去时
@@ -5041,6 +5075,30 @@ function PersonaEditor({
   const [desc, setDesc] = useState(editing?.desc ?? draft?.desc ?? '')
   const [model, setModel] = useState(editing?.model ?? draft?.model ?? '')
   const [prompt, setPrompt] = useState(editing?.prompt ?? draft?.prompt ?? '')
+  // 角色级技能池（保存后才有 id）：归该角色私有、仅其对话生效；导入/删除走原生对话框 + 回收站。
+  const [personaSkills, setPersonaSkills] = useState<SkillRecord[]>([])
+  const [skillsBusy, setSkillsBusy] = useState(false)
+  const reloadPersonaSkills = useCallback(async (pid: string): Promise<void> => {
+    const list = await window.deva?.skills?.listPersona(pid).catch(() => undefined)
+    if (list) setPersonaSkills(list)
+  }, [])
+  useEffect(() => {
+    if (editing?.id) void reloadPersonaSkills(editing.id)
+  }, [editing?.id, reloadPersonaSkills])
+  const importPersonaSkill = async (): Promise<void> => {
+    if (!editing?.id || skillsBusy) return
+    setSkillsBusy(true)
+    const res = await window.deva?.skills?.importPersona(editing.id).catch(() => undefined)
+    if (res?.ok) await reloadPersonaSkills(editing.id)
+    setSkillsBusy(false)
+  }
+  const removePersonaSkill = async (skillId: string): Promise<void> => {
+    if (!editing?.id || skillsBusy) return
+    setSkillsBusy(true)
+    await window.deva?.skills?.removePersona(editing.id, skillId).catch(() => undefined)
+    await reloadPersonaSkills(editing.id)
+    setSkillsBusy(false)
+  }
   const [saving, setSaving] = useState(false)
 
   // 头像：初始化解析为**具体** spec，此后只处理显式值、保存也写显式值（杜绝漂移）。
@@ -5237,6 +5295,65 @@ function PersonaEditor({
                   items={modelItems}
                   display={modelDisplay}
                 />
+              </div>
+
+              <div className="cf-field">
+                <label className="cf-field__label">{t('cf.fPersonaSkills')}</label>
+                {editing ? (
+                  <>
+                    {personaSkills.length === 0 ? (
+                      <div className="cf-quick__hint">{t('cf.fPersonaSkillsEmpty')}</div>
+                    ) : (
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px',
+                          maxHeight: 132,
+                          overflowY: 'auto'
+                        }}
+                      >
+                        {personaSkills.map((sk) => (
+                          <div key={sk.id} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span
+                              style={{
+                                flex: 1,
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                                whiteSpace: 'nowrap'
+                              }}
+                            >
+                              {sk.name}
+                              {sk.description ? ` — ${sk.description}` : ''}
+                            </span>
+                            <button
+                              type="button"
+                              className="cf-btn"
+                              style={{ padding: '0 8px' }}
+                              disabled={skillsBusy}
+                              title={t('cf.cancel')}
+                              onClick={() => void removePersonaSkill(sk.id)}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ marginTop: '6px' }}>
+                      <button
+                        type="button"
+                        className="cf-btn"
+                        disabled={skillsBusy}
+                        onClick={() => void importPersonaSkill()}
+                      >
+                        {t('cf.fPersonaSkillsImport')}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="cf-quick__hint">{t('cf.fPersonaSkillsNeedSave')}</div>
+                )}
               </div>
 
               <div className="cf-field">

@@ -127,6 +127,7 @@ function personaRecToPersona(rec: PersonaRecord): Persona {
     avatarImage: rec.avatarImage ?? '',
     tagline: rec.tagline,
     model: rec.model,
+    skillCount: rec.skillCount,
     prompt: rec.prompt,
     scope: 'global',
     source: 'custom',

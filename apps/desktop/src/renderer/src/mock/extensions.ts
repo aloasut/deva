@@ -10,7 +10,7 @@ export type ExtKind = 'persona' | 'skill' | 'mcp'
 /** 作用域：首版仅全局。 */
 export type ExtScope = 'global'
 /** 来源：`custom` = 用户自定义；`builtin` = 系统内置（目前仅元技能 create-skill）。 */
-export type ExtSource = 'custom' | 'builtin'
+export type ExtSource = 'custom' | 'builtin' | 'project' | 'persona'
 
 export interface Skill {
   /** 文件夹名，稳定身份（与 deva.skills 的 SkillRecord.id 对齐）。 */
@@ -31,8 +31,10 @@ export interface Skill {
   scope: ExtScope
   source: ExtSource
   enabled: boolean
-  /** 可用角色（角色 id）；null = 全部角色。内置技能恒为 null。 */
+  /** 可用角色（角色 id）；null = 全部角色。内置/角色池/项目技能恒开放。 */
   roles: string[] | null
+  /** source='persona' 时的属主角色 id；项目/角色池技能不经扩展页。 */
+  personaId?: string
 }
 
 export type McpTransport = 'stdio' | 'sse' | 'http'
@@ -115,6 +117,8 @@ export interface Persona {
   tagline: string
   /** 偏好模型引用 `"providerId:modelId"`；空串 = 跟随主对话默认。 */
   model: string
+  /** 私有技能池数量（只读派生，仅列表 IPC 填，花名册角标用）。 */
+  skillCount?: number
   /** 提示词正文（追加进主智能体系统提示词）。 */
   prompt: string
   scope: ExtScope
