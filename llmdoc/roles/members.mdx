@@ -1,0 +1,42 @@
+---
+description: "项目成员协作：独立会话文件+主对话名单、MAX_MEMBERS=10、@提及与 create_member 两来源、member_send 按需加载、成组派发等最后一个交差才唤醒、成员 asks 卡不进主对话记录、回执滞留 1100ms、以本人身份回复"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/members.ts
+relations:
+  requires:
+    - roles/role-semantics.mdx
+  related:
+    - ux/input-contracts.mdx
+    - chat-engine/agent-loop.mdx
+    - ux/renderer-architecture.mdx
+---
+
+# 项目成员（Members）
+
+## 范围与所有权
+
+本档回答：成员是什么、如何派发与协作、UI 契约有哪些硬语义。owner：`members.ts`；派发/成组/汇报逻辑在 `chat.ts` 成员段（memberDispatches / memberGroupsWaiting / reportMemberTurn）。成员与 Persona、子智能体的区别先读 [角色语义](../roles/role-semantics.mdx)。
+
+## 模型
+
+- 一个主对话至多 `MAX_MEMBERS=10` 个成员；每个成员是**独立的成员会话**（真正的对话文件，parentId 指回主对话）。名单存主对话属性，不在消息流里；removed 只标记不物理删。
+- 创建来源两个：用户在输入里 @ 一个角色（自动加为成员，`NEW_MEMBER_TOKENS` 见 [输入契约](../ux/input-contracts.mdx)），或主 Agent 调 create_member（其工具描述里写明分工判据：差异大 + 持续反复才建成员；一次性任务用 run_subagent）。
+- 成员工具按需加载（DEFERRED_MEMBER_TOOLS）：member_send 等不常驻工具表。
+
+## 派发与唤醒语义
+
+- member_send 派任务给成员，在自己的会话里跑完整 Agent 轮。
+- **成组派发**：多个成员同轮被派时，等最后一个交差才向主对话唤醒一次（memberGroupsWaiting）——不是逐个回来逐个打断。
+- 成员完成后**以本人身份**（自己的头像+名字）在主对话回复，不借主 Agent 之口。
+
+## 渲染层契约（硬语义）
+
+- 成员的提问/计划/选文件夹卡（MemberAsks）**不进主对话记录、不经主角色**：答复直达成员那一轮。这些卡按 design/member-ask-inline.html 方案 A 内联呈现（该 design/ 文件已不存在，见 [安全边界](../guardrails/security-boundaries.mdx) 失效指针声明）。
+- 回执「✓ 已回答…」整批滞留 `MEMBER_RECEIPT_HOLD_MS=1100ms` 后收起——防逐行跳动（`ChatFirstShell.tsx`）。
+- 浏览器 handoff 在成员语境下只放胶囊不放卡片（[内置浏览器](../channels/browser.mdx)）。
+
+## 变更后果
+
+改派发/唤醒时序 → 成组等待与回执滞留是配套体验语义，改动会同时影响渲染层展示逻辑；改成员存储 → 注意边车字段按 toolUseId 记录的约定（[存储布局](../persistence/storage-layout.mdx)）。

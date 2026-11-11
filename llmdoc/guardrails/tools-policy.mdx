@@ -1,0 +1,51 @@
+---
+description: "工具执行与策略：executeTool/toolCategory 分类、2026-10-09 零限制转向（deny 名单移除、无授权弹框）、护栏数值表（READ/EXEC/WALK 上限）、未知工具名归 mcp 类、旧权限闸门词汇语义史、成员工具按需加载"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/tools.ts
+    - apps/desktop/src/main/services/exec-policy.ts
+relations:
+  related:
+    - guardrails/security-boundaries.mdx
+    - chat-engine/agent-loop.mdx
+    - roles/scheduled-tasks.mdx
+---
+
+# 工具执行与策略
+
+## 范围与所有权
+
+本档回答：Agent 有哪些工具、执行时有什么护栏、「权限闸门」到底是什么。owner：`tools.ts`（约 2110 行：fullToolSpecs / toolSpecs / executeTool / toolCategory / needsWorkspaceMount）与 `exec-policy.ts`（命令执行）。
+
+## 产品级安全姿态（先读这段，否则会被旧注释误导）
+
+**2026-10-09 零限制转向**：命令执行的 deny 名单与拆分器整体移除（`exec-policy.ts` 头注）；Agent 文件工具不再校验受信根，凭据目录、`~/.deva/.git` 一律可读写（`tools.ts` resolvePath 注释）；系统提示词明文告知模型「本应用没有授权弹框」（chat.ts）。当前交互轮闸门退化为：**唯一拒绝 = 用户暂不挂载工作区**。
+
+**词汇语义史**（读旧代码/旧注释时的对照表）：
+
+| 旧词汇 | 现状 |
+|---|---|
+| 权限闸门 / ask 过闸 | ask 类语义已死；交互轮恒放行（除未挂载工作区） |
+| mcp 工具「默认走 ask」 | 已失效（mcp.ts 头注仍留此句，属语义漂移） |
+| sealed / 密封判定 | 仍有效，但只作用于定时任务等 unattended 轮（见 [定时任务](../roles/scheduled-tasks.mdx)） |
+| fs-guard / 受信根 | 只守渲染层发起的 fs/git IPC，不守 Agent 工具（见 [安全边界](../guardrails/security-boundaries.mdx)） |
+| decision.ts | 是主进程内部置信度决策运行时（Phase 3 预留），**不是**权限系统 |
+
+## 工具分类与兜底
+
+- `toolCategory()` 给出 read / write / exec / mcp 等类别，是闸门、限流、sealed 判定的共用输入。`ask_user` / `exit_plan` / `skill` / `todo_write` 等是「闸门前特判」，不进闸门本身。
+- **未知工具名归 mcp 类**——防后门语义：工具表里不存在的名字不会落进宽松类别。
+
+## 护栏数值（防失控而非防越权）
+
+护栏的存在理由是防单次调用失控，不是权限：READ 2000 行 / 25k token；EXEC 输出 30k 字符、默认超时 10min / 上限 30min、10MB 捕获；WALK 20k；grep 200 行。数值以 `tools.ts` 注释为准，本档不复制具体表。
+
+## 按需加载
+
+成员工具（member_send 等）默认不进工具表，按需注入（DEFERRED_MEMBER_TOOLS，见 [项目成员](../roles/members.mdx) 与 [上下文治理](../chat-engine/context-management.mdx)）——省上下文，也缩小模型误触面。
+
+## 变更后果
+
+- 加/删工具或改类别 → 同步核对：sealed 判定（[定时任务](../roles/scheduled-tasks.mdx)）、护栏数值、系统提示词工具说明、渲染层 TOOL_META 文案表（[渲染层架构](../ux/renderer-architecture.mdx)）。
+- 恢复任何「deny 名单 / 授权弹框」前，先确认这是产品方向改变，而非误把历史语义当现状。

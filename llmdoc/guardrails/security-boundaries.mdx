@@ -1,0 +1,40 @@
+---
+description: "安全边界与密钥模型（密钥存哪里、怎么加密）：safeStorage 加密存 ~/.deva/secrets.json、明文永不出主进程、mcp:/remote: 前缀键；fs-guard 只守渲染层发起的 fs/git IPC、Agent 工具不受限的双边界；附件会话白名单与交付卡 OPENABLE 白名单、git execFile 无 shell"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/fs-guard.ts
+    - apps/desktop/src/main/services/secrets.ts
+    - apps/desktop/src/main/services/attachments.ts
+    - apps/desktop/src/main/services/deliverables.ts
+relations:
+  related:
+    - guardrails/tools-policy.mdx
+    - runtime/ipc-contract.mdx
+    - ux/deliverables-media.mdx
+---
+
+# 安全边界与密钥模型
+
+## 双边界模型（本仓库安全架构的核心）
+
+**边界一：渲染层 → 主进程 IPC。** 渲染层不可信（sandbox 只挡直接访问，挡不住伪造 IPC 参数）。`fs-guard.ts` 守所有**渲染层发起**的 fs/git IPC：受信根内存态判定、realpath 跟随链接以闭合符号链接穿越洞、批量判定防 git status 卡主进程。
+
+**边界二：Agent 工具。** 2026-10-09 起文件/命令**零限制**（见 [工具策略](../guardrails/tools-policy.mdx) 的姿态说明）——Agent 可读写一切，包括凭据目录。文档与代码注释里任何「Agent 工具校验受信根」的说法都已过时。
+
+**边界外的东西**也各有闸，不共用 fs-guard：附件走「本会话白名单」（渲染层伪造不出路径，`attachments.ts`）；交付卡路径由主进程从会话历史取、IPC 只收 id，OPENABLE 白名单里可执行文件不可「打开」（`deliverables.ts`）；git 面板用 assertInside + execFile 无 shell 无拼接、`GIT_TERMINAL_PROMPT=0`（`git.ts`，属有意不建文档的重建面，头注释齐全）；MCP 工具结果恒作数据（防提示注入，见 [MCP 集成](../extensions/mcp.mdx)）。
+
+## 密钥模型
+
+- 存储：safeStorage 加密落 `~/.deva/secrets.json`（`secrets.ts`）。
+- 三条硬规则：**明文永不出主进程**（无 get IPC，渲染层只持 hasKey 布尔）；**加密不可用时拒写**、绝不静默降级为明文落盘；密钥在 streamChat 等使用点内解密注入，用完即逝。
+- 键约定：`mcp:<id>:<field>`、`remote:<id>:<field>` 前缀键；MCP 配置里用 `{secretRef}` 占位符引用（见 [MCP 集成](../extensions/mcp.mdx)、[远程通道](../channels/remote-channels.mdx)）。
+
+## 失效指针声明
+
+仓库源码注释里多处引用 `docs/architecture/security.md`、`docs/modules/ide-features.md`、`docs/architecture/providers.md`、`design/*.html`——这些文件**在仓库中不存在**（docs/ 目前只有静态站首页）。读到这类引用按「已失效指针」处理，勿外去找。
+
+## 变更后果
+
+- 动 secrets.ts 的读写路径或加密回退 → 必须保持「拒写不明文」语义，失败语义变更属产品级决定。
+- 给渲染层新增任何带路径参数的 IPC → 先判定它归哪条边界；凡渲染层可伪造的路径必须过 fs-guard 或白名单。

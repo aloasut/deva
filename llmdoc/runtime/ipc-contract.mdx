@@ -1,0 +1,36 @@
+---
+description: "preload 桥 IPC 契约（渲染层调用主进程的唯一入口）：window.deva 约 20 个命名空间白名单 API、线缆类型在 preload 内结构化复述的约定、chat:event 等推送通道、密钥无 get IPC 的暴露面规则"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/preload/index.ts
+    - apps/desktop/src/preload/index.d.ts
+relations:
+  related:
+    - chat-engine/agent-loop.mdx
+    - ux/renderer-architecture.mdx
+    - guardrails/security-boundaries.mdx
+---
+
+# IPC 契约（preload 桥）
+
+## 范围与权威来源
+
+本档是渲染层 ↔ 主进程**全部**通道的导览。契约真源：`apps/desktop/src/preload/index.ts`（约 1505 行，每 API 带语义注释）；类型面 `apps/desktop/src/preload/index.d.ts`。改任何通道语义前先读这两处，勿凭本档细节直接改。
+
+## 结构约定
+
+- 主进程侧每服务一个 `register*Ipc()`，在 `src/main/index.ts` whenReady 里逐一注册（注册顺序即依赖顺序）。
+- preload 把 `ipcRenderer.invoke/send/on` 包成约 20 个命名空间（fs / config / chat / skills / personas / mcp / secrets / terminal / git / tasks / memory / update / remote…）暴露为 `window.deva`。
+- **线缆类型结构化复述**：跨进程类型在 preload 内复述一份，不跨层 import main 的类型。这是刻意的解耦约定——改共享结构时两侧同步改，靠 typecheck（`pnpm typecheck` 的 node/web 两个 tsconfig）兜底。
+- 推送通道：流事件走 `chat:event` 等 `webContents.send`；任务走 `tasks:changed` 全量广播；MCP 状态走 `deva.mcp.onStatus` 补丁。渲染层不做乐观更新，以广播为准（见 [渲染层架构](../ux/renderer-architecture.mdx)）。
+
+## 暴露面规则（安全相关）
+
+- **密钥无 get IPC**：`window.deva.secrets` 只收写入，读取不出主进程（渲染层只持 hasKey 布尔）。完整密钥模型见 [安全边界](../guardrails/security-boundaries.mdx)。
+- 渲染层伪造的 fs/git 路径由主进程 fs-guard 判定（受信根）；Agent 工具不走此闸——双边界模型见 [安全边界](../guardrails/security-boundaries.mdx)。
+- 交付卡打开等「带路径副作用」的 IPC 只收 id，路径由主进程从会话历史取（见 [交付物媒体](../ux/deliverables-media.mdx)）。
+
+## 变更后果
+
+新增/改名任何 `window.deva.*` API 时：preload 复述类型 + index.d.ts + 渲染层调用三处同步；若 API 触碰密钥、路径或执行，先对照 [安全边界](../guardrails/security-boundaries.mdx) 的边界归属。

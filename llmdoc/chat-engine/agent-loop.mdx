@@ -1,0 +1,64 @@
+---
+description: "对话回合执行引擎：runTurn/runAgentLoop 工具循环、触发源×模式矩阵（desktop/remote/schedule/member/taskAsk→unattended）、截断续写/重连/effort 降档自愈、provider:model 解析与思考档位、chat-bus 事件总线"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/chat.ts
+    - apps/desktop/src/main/services/chat-bus.ts
+    - apps/desktop/src/main/services/model-resolve.ts
+    - apps/desktop/src/main/services/provider.ts
+    - apps/desktop/src/shared/effort.ts
+    - apps/desktop/src/shared/context.ts
+    - "apps/desktop/src/main/providers/*.ts"
+relations:
+  requires:
+    - guardrails/tools-policy.mdx
+  related:
+    - chat-engine/context-management.mdx
+    - roles/scheduled-tasks.mdx
+    - channels/remote-channels.mdx
+    - roles/members.mdx
+---
+
+# 对话执行引擎（Agent Loop）
+
+## 范围与所有权
+
+本档回答：一个对话回合如何流动、谁触发、失败如何自愈、模型与思考档位如何解析。`apps/desktop/src/main/services/chat.ts`（约 6500 行）是 owner：runTurn / runAgentLoop / registerChatIpc / 成员编排 / 子智能体派发 / 压缩衔接都在这一个文件。工具怎么过闸见 [工具策略](../guardrails/tools-policy.mdx)；历史怎么压缩见 [上下文治理](../chat-engine/context-management.mdx)。
+
+## 回合流程
+
+`runTurn` → `runAgentLoop`：流式生成 → 收集工具调用 → 过闸门 → 执行 → 结果回灌，直至模型不再调用工具。`AgentLoopArgs`（chat.ts 内，逐字段语义注释）是理解可配置面的入口。**主轮 / 子智能体 / 定时任务都不设步数上限**（对标 Claude Code 的 agentic loop）；唯一上限在定时任务：`TASK_MAX_STEPS=100` + 原地打转刹车（见 [定时任务](../roles/scheduled-tasks.mdx) 与 `shared/limits.ts`）。
+
+## 触发源 × 模式矩阵
+
+| 触发源 | 入口 | 模式 |
+|---|---|---|
+| 桌面 UI | chat:send | 交互 |
+| 插入消息 | chat:insert | 见 insertableTurns 语义 |
+| 定时调度器 | scheduler 30s tick 串行队列 | unattended（密封） |
+| 后台任务通知唤醒 | wakeForNotices | unattended |
+| 远程手机端/IM | 经 chatRuntime 同一入口 | 交互（远端人在场） |
+| 成员派发 | memberDispatches | 成员自有会话轮 |
+
+判断交互性决定闸门行为（交互轮唯一拒绝=用户暂不挂载工作区；unattended 走密封判定，见 [定时任务](../roles/scheduled-tasks.mdx)）。
+
+## 自愈语义（改动前必读）
+
+- 截断续写：连续截断 `MAX_TRUNCATED_STREAK=4` 步内自动续写，工具参数残缺与「只思考/半截正文」共用该计数。
+- 空回合自动追问；断流重连最多 6 次；输出预算与 effort 降档带**记忆**（降过档的会话保持降档，防反复震荡）。
+- 重连/stream_reset 与提示缓存纪律联动：动这些路径先读 [上下文治理](../chat-engine/context-management.mdx)——「缓存还热不动历史」是硬约束。
+
+## 模型解析与思考档位
+
+- 模型引用约定 `"providerId:modelId"`；解析失败**恒回落、永不抛错**（`model-resolve.ts`）。密钥在 streamChat 内解密注入，不经渲染层。
+- 上下文窗口「宁报小」（`shared/context.ts` 自动表）；effort 档位判定按 provider 家族选 ThinkFormat（standard/deepseek/zai/qwen/compat，`shared/effort.ts`），不支持的档位隐藏、恒按「默认」发送。
+
+## 事件总线与真源
+
+`services/chat-bus.ts` 的 publishChatEvent / AppNotice / SessionsChanged 是唯一事件出口；渲染层转发与远程通道（hub）都是订阅者，**逐订阅者 try/catch 隔离**（一个订阅者异常不拖垮分发）。会话历史真源在主进程 `chat-store.ts`（一对话一文件，见 [存储布局](../persistence/storage-layout.mdx)）；`Message[]` 是模型上下文唯一真源，渲染层只发新用户文本、按需重建展示。
+
+## 变更后果
+
+- chat.ts 是全仓库最大回归单点：动 runAgentLoop 主干前先跑 `pnpm typecheck`，并确认改动不破坏「每步落盘」「缓存纪律」「触发源矩阵」三件事。
+- 新增触发源时必须回答：它交互还是 unattended？走哪个入口？会话文件与成员/子智能体归属如何？

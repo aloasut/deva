@@ -1,0 +1,38 @@
+---
+description: "交付物与附件媒体：交付卡路径由主进程从历史取（IPC 只收 id）、OPENABLE 白名单可执行文件不可打开、size null=文件已不存在、附件本会话白名单、media blob 内容寻址、缩略图对话:调用:序号缓存"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/shared/deliverables.ts
+    - apps/desktop/src/main/services/media-store.ts
+    - apps/desktop/src/main/services/office-text.ts
+    - apps/desktop/src/main/services/image-read.ts
+    - apps/desktop/src/renderer/src/features/chat/DeliverablesCard.tsx
+relations:
+  related:
+    - guardrails/security-boundaries.mdx
+    - persistence/storage-layout.mdx
+    - ux/renderer-architecture.mdx
+---
+
+# 交付物与附件媒体
+
+## 范围与权威来源
+
+模型产出文件 → 交付卡 → 用户打开 的链路。owner：`shared/deliverables.ts`（契约类型）+ `deliverables.ts`（OPENABLE 白名单，[安全边界](../guardrails/security-boundaries.mdx)）+ `media-store.ts`（blob 存储）+ 渲染层 `DeliverablesCard.tsx`。`present_files` 工具产生交付卡；时间轴上照常画工具卡，交付卡另在回复末尾呈现（blocks.tsx）。
+
+## 交付卡契约
+
+- **路径不进 IPC**：渲染层只收 id；打开/检查时主进程从会话历史取真实路径——防伪造路径（安全语义归 [安全边界](../guardrails/security-boundaries.mdx)）。
+- `DeliverableInfo.size` 为 null = 文件已不存在（过期显示语义，重开时如实呈现）；`openable=false` = 可执行/脚本类只能展示不能打开。
+- 卡内容由主进程 inspect 提供，重开会话可完整还原；缩略图按「对话:调用:序号」三元组缓存；>5 个交付折叠。
+
+## 附件与媒体管线
+
+- 附件：发送时走「本会话白名单」闸门（[安全边界](../guardrails/security-boundaries.mdx) 的双边界模型）；图片 `media_type` 必须与字节一致（`image-read.ts` 魔数判定，nativeImage 不引 sharp——免装铁律）。
+- `media-store.ts`：内容寻址 blob 外置（`data/media/`），会话文件只留引用（[存储布局](../persistence/storage-layout.mdx)）。
+- `office-text.ts`：docx/xlsx 等提取纯文本供模型读；`image-trim.ts` 跨回合裁剪按块边界保缓存前缀（[上下文治理](../chat-engine/context-management.mdx)）。
+
+## 变更后果
+
+改 DeliverableInfo 结构 → shared 类型、主进程 inspect、渲染层卡渲染三处同步；改白名单/打开策略 → 属安全边界变更，先过 [安全边界](../guardrails/security-boundaries.mdx) 评审。

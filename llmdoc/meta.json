@@ -1,0 +1,72 @@
+{
+  "schema": "llmdoc.meta/v3",
+  "baseline": {
+    "revision": "65236c40cd3a0683c6acb57e1fcaa4b2f51b24b9",
+    "verifiedAt": "2026-11-11T15:03:06Z"
+  },
+  "documents": {
+    "runtime/process-model.mdx": {
+      "validatedRevision": null
+    },
+    "runtime/ipc-contract.mdx": {
+      "validatedRevision": null
+    },
+    "chat-engine/agent-loop.mdx": {
+      "validatedRevision": null
+    },
+    "chat-engine/context-management.mdx": {
+      "validatedRevision": null
+    },
+    "guardrails/tools-policy.mdx": {
+      "validatedRevision": null
+    },
+    "guardrails/security-boundaries.mdx": {
+      "validatedRevision": null
+    },
+    "extensions/skills.mdx": {
+      "validatedRevision": null
+    },
+    "extensions/mcp.mdx": {
+      "validatedRevision": null
+    },
+    "roles/role-semantics.mdx": {
+      "validatedRevision": null
+    },
+    "roles/members.mdx": {
+      "validatedRevision": null
+    },
+    "roles/scheduled-tasks.mdx": {
+      "validatedRevision": null
+    },
+    "persistence/storage-layout.mdx": {
+      "validatedRevision": null
+    },
+    "persistence/checkpoints-rewind.mdx": {
+      "validatedRevision": null
+    },
+    "channels/browser.mdx": {
+      "validatedRevision": null
+    },
+    "channels/remote-channels.mdx": {
+      "validatedRevision": null
+    },
+    "ux/renderer-architecture.mdx": {
+      "validatedRevision": null
+    },
+    "ux/input-contracts.mdx": {
+      "validatedRevision": null
+    },
+    "ux/deliverables-media.mdx": {
+      "validatedRevision": null
+    },
+    "release/release-and-update.mdx": {
+      "validatedRevision": null
+    }
+  },
+  "convergence": {
+    "capturedAt": "2026-11-11T15:03:06Z",
+    "source": "init",
+    "documentCount": 1,
+    "totalEstimatedTokens": 5
+  }
+}

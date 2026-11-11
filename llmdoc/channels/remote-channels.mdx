@@ -1,0 +1,37 @@
+---
+description: "远程通道与机器人：hub 平台无关 RemoteAdapter（飞书/Telegram）、扫码配对主人制、入站只认已配对用户、回合视图聚合与限频分页、交互卡推私聊、remote:<id>:<field> 密钥键"
+kind: architecture
+code:
+  paths:
+    - "apps/desktop/src/main/services/remote/*.ts"
+    - apps/desktop/src/renderer/src/redesign/BotsPane.tsx
+relations:
+  related:
+    - chat-engine/agent-loop.mdx
+    - ux/renderer-architecture.mdx
+    - roles/scheduled-tasks.mdx
+    - guardrails/security-boundaries.mdx
+---
+
+# 远程通道（机器人：飞书 / Telegram）
+
+## 范围与所有权
+
+本档回答：手机端/IM 如何接入桌面 Deva、信任边界在哪、消息如何被聚合。owner：`services/remote/`（hub 约 1265 行平台无关层 + feishu/telegram 适配器 + onboard 配对 + store/paginate/types 分层契约）。渲染层机器人面板 `BotsPane.tsx` 只展示与触发。
+
+## 架构分层
+
+- **hub 平台无关**：新增平台 = 实现一个 RemoteAdapter，hub 不感知平台细节（`types.ts` 头注释即分层契约）。
+- 机器人经**扫码配对**创建，扫码人成为主人；入站消息**只认已配对用户**——未配对来话不进任何回合（信任边界，密钥按 `remote:<id>:<field>` 前缀键存储，[安全边界](../guardrails/security-boundaries.mdx)）。
+- 远程来的用户消息经 chatRuntime **同一入口**进回合（交互模式，人在远端在场；区别于定时任务的 unattended，[Agent Loop](../chat-engine/agent-loop.mdx)）。
+- 退出时序里远程通道在 MCP 之后停（[进程模型](../runtime/process-model.mdx)）。
+
+## 消息语义
+
+- **回合视图聚合**：一个 Agent 回合的多段流式输出聚合成平台友好的消息视图；分页带限频（`paginate.ts`），防 IM 平台刷屏限流。
+- **交互卡推私聊**：成员 asks / 任务确认等交互卡只推私聊会话，不发群（防泄漏与误触）。任务调度触发与远程通道可叠加（任务结果也能经远程送达，[定时任务](../roles/scheduled-tasks.mdx) handoff）。
+- 事件经 chat-bus 订阅接入（逐订阅者隔离，[Agent Loop](../chat-engine/agent-loop.mdx)）。
+
+## 变更后果
+
+新增平台适配器 → 对齐 types.ts 分层契约与「只认配对用户」边界；动聚合/分页 → 保持限频，防平台封禁。

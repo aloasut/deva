@@ -1,0 +1,41 @@
+---
+description: "检查点与回滚：内容寻址 blob 按 toolUseId 归属不存轮下标（压缩删轮不错位）、lastKnown 外部改动冲突检测、链接文件跳过、run_command 影响不可撤销、刻意不用影子 git、渲染层 RewindModal turn 编号同源约定"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/checkpoints.ts
+    - apps/desktop/src/main/services/line-stats.ts
+    - apps/desktop/src/renderer/src/redesign/RewindModal.tsx
+relations:
+  related:
+    - persistence/storage-layout.mdx
+    - chat-engine/context-management.mdx
+---
+
+# 检查点与回滚（Checkpoints / Rewind）
+
+## 范围与所有权
+
+本档回答：写文件如何可回滚、回滚到第 k 轮是什么语义、为什么不用 git。owner：`checkpoints.ts`（约 646 行，头注释含完整决策）；行数统计 `line-stats.ts`（手写 Myers diff，免装铁律）；渲染层 `RewindModal.tsx`。
+
+## 记录模型
+
+- 内容寻址：文件内容 sha256 存 `data/checkpoints/<会话>/<hash>`（[存储布局](../persistence/storage-layout.mdx)），相同内容去重。
+- 记录按 **toolUseId** 归属（子智能体的写入归父 run_subagent 的 id），**不存轮下标**——这是核心不变量：压缩、删轮之后回滚目标不错位。与边车字段约定同源（[存储布局](../persistence/storage-layout.mdx)）。
+- 回滚目标语义：回滚到第 k 轮 = 取每个文件在 k 轮起各记录中**最早**的 pre 内容恢复。
+
+## 冲突与不可回滚面
+
+- `lastKnown` hash 检测外部改动：文件在检查点之后被应用外修改过 → 默认跳过并在 UI 标记冲突（渲染层勾选可强制覆盖该路径）。
+- 符号链接/真实路径漂移一律跳过。
+- `run_command` 的影响**不可撤销**：只记录文本提示，不尝试回滚命令副作用。
+- 刻意不用影子 git 仓库（免装铁律 + 用户仓库不被污染的取舍）。
+
+## 渲染层契约
+
+- turn 编号两侧同源：渲染层 groupTurns 与主进程 turnRanges 都从历史推导、0 基。
+- RewindModal v1 刻意不做 diff 预览；预览仅给人看，主进程执行时**重算**、不信任回传数据（除用户显式勾选覆盖的冲突路径）。
+
+## 变更后果
+
+动压缩/删轮（[上下文治理](../chat-engine/context-management.mdx)）→ 必须验证检查点记录仍按 toolUseId 可解析；动回滚执行 → 保持「重算不信任回传」与「外部改动默认跳过」两个防损语义。

@@ -1,0 +1,47 @@
+---
+description: "主进程进程拓扑与生命周期：electron-vite 三目标构建、渲染层 sandbox 边界、PTY Utility Process 终端隔离、单实例锁与 before-quit 落盘收尾、托盘驻留与跨平台补丁理由"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/index.ts
+    - apps/desktop/src/main/pty-host.ts
+    - apps/desktop/src/main/services/terminal.ts
+    - apps/desktop/src/main/services/shells.ts
+    - apps/desktop/src/main/services/tray-icon.ts
+    - apps/desktop/electron.vite.config.ts
+relations:
+  related:
+    - runtime/ipc-contract.mdx
+---
+
+# 进程模型与生命周期
+
+## 范围与所有权
+
+本档回答：Deva 有哪些进程、各自边界在哪、应用启动/退出时序为何这样排、终端为什么走独立进程。渲染层如何跨进程取数见 [IPC 契约](../runtime/ipc-contract.mdx)；打包产物形态见 [发布与更新](../release/release-and-update.mdx)。
+
+## 进程拓扑
+
+electron-vite 产出两个主进程入口与两个渲染页（`apps/desktop/electron.vite.config.ts`，均 CJS、依赖 externalize）：
+
+- **主进程**（`out/main/index.js`）：承载全部业务——Agent 循环、工具、MCP、存储、出站 HTTP。是几乎所有状态的真源。
+- **PTY Utility Process**（`out/main/pty-host.js`，`apps/desktop/src/main/pty-host.ts`）：node-pty 原生模块隔离在此。决策：终端崩溃不牵连主进程；主进程只做消息中继（`services/terminal.ts`），shell path/args 探测结果（`services/shells.ts`）不出主进程。执行命令的 shell（exec-policy，见 [工具策略](../guardrails/tools-policy.mdx)）与交互终端刻意分开。
+- **渲染层**：sandbox:true / contextIsolation / nodeIntegration:false，只见 `window.deva` 白名单 API。主窗口 `index.html`；「Deva 浏览器」窗口外框是独立页 `browser.html`（网页本体是主进程叠放的原生视图，见 [内置浏览器](../channels/browser.mdx)）。
+
+## 生命周期时序与决策
+
+启动（`apps/desktop/src/main/index.ts`，各 `register*Ipc()` 的注册顺序即依赖顺序）：
+
+- 单实例锁是**正确性要求**而非体验优化：防两个调度器对同一 `~/.deva` 并发。
+- Linux 三个补丁必须在 app ready 前后按位施行：`--password-store`（凭据库）、WM_CLASS、关闭窗口遮挡检测（遮挡检测误判会导致渲染节流，影响浏览器收起续渲染，见 [内置浏览器](../channels/browser.mdx)）。
+- 首显兜底：5 个「可首显」事件任一先到即 show，不等固定时序。
+
+退出：`before-quit` 先拦截退出 → `settleActiveTurns(3000)` 等进行中回合落盘 → 再断 MCP、停远程通道、关浏览器页。每步落盘（Agent 循环的 onStep）而非整轮结束才写，是「随时可被杀掉」假设的一部分（见 [Agent Loop](../chat-engine/agent-loop.mdx)）。
+
+托盘：win32 默认关窗驻留托盘；托盘图标运行期生成（`tray-icon.ts` 手写 PNG 编码器，服从免装铁律——零第三方原生依赖）。
+
+## 变更后果
+
+- 改 electron.vite 入口/目标 → 必须核对三个 out 产物路径与打包配置（`electron-builder.yml`）一致。
+- 动 `before-quit` 顺序 → 先想清楚「回合未落盘即退出」的数据后果。
+- 给主进程加原生依赖会破坏免装铁律与四平台矩阵（见 [发布与更新](../release/release-and-update.mdx)），需显式与用户确认。

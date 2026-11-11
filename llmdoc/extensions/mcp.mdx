@@ -1,0 +1,40 @@
+---
+description: "MCP 集成：启用即连接与 reconcile 代次对账防过期回调、{secretRef} 密钥占位、serverId__toolName 命名空间与字符白名单、工具结果恒作数据防提示注入、needs_config/needs_secret 失败语义"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/mcp.ts
+    - apps/desktop/src/main/services/mcp-config.ts
+relations:
+  related:
+    - guardrails/tools-policy.mdx
+    - guardrails/security-boundaries.mdx
+    - extensions/skills.mdx
+---
+
+# MCP 集成
+
+## 范围与所有权
+
+本档回答：外部 MCP 服务器如何连接、工具如何命名、结果如何被信任。owner：`mcp.ts`（约 678 行，头注释即「安全铁律」）与 `mcp-config.ts`（配置面）。
+
+## 生命周期：启用即连接 + reconcile 对账
+
+- 配置启用 = 立即连接；配置变更经 reconcile 对账落地。对账带**代次（gen）+ 票号**，防止过期回调把旧状态写回（竞态防护是这里的核心设计，动异步路径前先读懂 gen 语义）。
+- 退出时序中 MCP 在回合落盘之后、远程通道之前断开（见 [进程模型](../runtime/process-model.mdx)）。
+- 状态推送：`deva.mcp.onStatus` 实时补丁到渲染层（[IPC 契约](../runtime/ipc-contract.mdx)）。
+
+## 密钥与配置
+
+- 配置中密钥用 `{secretRef}` 占位符；实际值存 `mcp:<serverId>:<field>` 前缀键（[安全边界](../guardrails/security-boundaries.mdx)）。渲染层 MCP 编辑器写后不回显，value 恒空占位。
+- 失败语义：`needs_config` / `needs_secret` 是**可恢复的待配置态**，不是错误——模型会收到明确的 tool_result 指引用户补配置，而非工具崩溃。
+
+## 工具命名与信任边界
+
+- 工具命名空间：`serverId__toolName`，强制 `^[A-Za-z0-9_-]{1,64}$`——防外部服务器借工具名注入非法字符或伪造内置工具名。
+- **结果恒作数据**：MCP 工具返回值永远按数据处理，绝不解释为指令（防提示注入的第一道闸）。未知工具名归 mcp 类的兜底逻辑见 [工具策略](../guardrails/tools-policy.mdx)。
+- 注意语义漂移：`mcp.ts` 头注仍写「默认走 ask 权限闸门」，该 ask 语义已死（交互轮恒放行）；以 [工具策略](../guardrails/tools-policy.mdx) 为准。
+
+## 变更后果
+
+改命名规则或类别归属会影响存量会话里的工具引用与提示缓存前缀；改 reconcile 时必须保持「过期回调不可写回」不变量。

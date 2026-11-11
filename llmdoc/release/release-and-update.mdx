@@ -1,0 +1,46 @@
+---
+description: "打包发布与自动更新指南：tag==package.json 版本校验、四平台矩阵原生打包、--publish never 统一 release job、draft Release 与 latest.yml 增量更新、UpdateMode auto/portable/manual 判定、mac ad-hoc 签名恒 manual、本地试打包流程"
+kind: guide
+code:
+  paths:
+    - apps/desktop/electron-builder.yml
+    - apps/desktop/src/main/services/updater.ts
+    - apps/desktop/src/shared/update.ts
+    - .github/workflows/release.yml
+    - "apps/desktop/scripts/*"
+    - apps/desktop/src/main/services/appimage.ts
+relations:
+  related:
+    - persistence/storage-layout.mdx
+    - runtime/process-model.mdx
+---
+
+# 打包发布与自动更新
+
+## 触发与不适用
+
+发新版、改打包配置、排查「用户收不到更新」时读本档。日常开发（`pnpm dev`）不涉及。版本号唯一来源 = `apps/desktop/package.json`。
+
+## 发版流程（CI 为准，`.github/workflows/release.yml` 头注释近手册级）
+
+1. 打 tag，CI 校验 **tag == package.json 版本**，不一致即失败（防版本漂移）。
+2. 四平台矩阵原生打包：win / mac×2（arm+x64）/ linux。node-pty 等原生依赖按平台拆包，**不可用通用产物冒充**。
+3. `--publish never`：各平台只出 artifact，由统一 release job 汇总——draft Release + append body（`scripts/release-notes.mjs` 生成）。`latest.yml` / blockmap 落入 Release 供 electron-updater 增量。
+4. 签名：mac 用 ad-hoc 签名（`scripts/adhoc-sign.cjs`）；Windows 安装器脚本 `build/installer.nsh`；Ubuntu 24+ 依赖 `build/linux/apparmor-profile.tpl`（AppArmor 模板是能否启动的关键，改动需实测）。
+
+本地试打包：`pnpm package:win|mac|linux`（electron-vite build + electron-builder）； portable 形态另有 `scripts/portable-zip.cjs`、Linux 有 `linux-launcher.cjs` / `appimage.ts`。
+
+## 自动更新语义（`updater.ts` / `shared/update.ts`）
+
+- **只在用户点「检查更新」时检查**，不后台轮询——产品决策，勿加自动检查。
+- 状态放主进程：下载进度离开关于页仍接得上（渲染层只是展示，[渲染层架构](../ux/renderer-architecture.mdx)）。
+- UpdateMode 按平台与安装形态分流：Windows 安装版 = auto（electron-updater）；便携版 = portable（提示下载新版）；mac ad-hoc 签名**恒 manual**（跳官网）。检查失败兜底 RELEASES_URL。
+
+## 验证策略（发布前确认）
+
+本仓库**无测试运行器**（免装铁律）：验证 = `pnpm typecheck`（node+web 两个 project）+ CI `pnpm build` + 纯函数走查（schedule/sealed/shared/* 按「无 IPC 可单测」标准设计以支持人工走查）。发布前至少跑全 typecheck 与目标平台打包。
+
+## 失败处理
+
+- CI 版本校验失败 → 对齐 tag 与 package.json，不要绕过校验。
+- 用户更新失败 → 按 UpdateMode 分流排查；便携版用户需手动下载（数据在 DEVA_HOME 可整体搬移，[存储布局](../persistence/storage-layout.mdx)）。

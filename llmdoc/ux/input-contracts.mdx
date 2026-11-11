@@ -1,0 +1,40 @@
+---
+description: "输入契约：@提及最长名字认法与 NEW_MEMBER_TOKENS 令牌集、/斜杠词法与 /compact /rewind 遮蔽同名技能、联想替换只换已敲前缀+逐字吻合段、TASK_MAX_STEPS/REPEAT 阈值主进程渲染层共享"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/shared/mention.ts
+    - apps/desktop/src/shared/slash.ts
+    - apps/desktop/src/renderer/src/redesign/composer-editor.ts
+relations:
+  related:
+    - roles/members.mdx
+    - extensions/skills.mdx
+    - roles/scheduled-tasks.mdx
+---
+
+# 输入契约（mention / slash / 联想替换）
+
+## 范围与权威来源
+
+`src/shared/` 的纯函数契约：渲染层上色/联想与主进程认人**共用同一认法**，两侧漂移即 bug。头注释即权威，本档是导览。共享的纯函数不依赖 Node/DOM（context.ts / effort.ts 头注明示）。
+
+## Mention 认法（`shared/mention.ts`）
+
+- 每个 `@` 取能接上的**最长名字**（`@设计师` 不算命中 `@设计`）；不要求名字后随分隔符。
+- `NEW_MEMBER_TOKENS = ['新建成员', '新成员', 'NewMember']`；`@新成员` 是旧写法，仅为旧消息渲染保留，勿在新逻辑中产生。
+- 主进程 handleMentions 与渲染层 composer 上色必须同步改。@一个已有角色 = 把它加为成员（[项目成员](../roles/members.mdx)）。
+
+## Slash 认法（`shared/slash.ts`）
+
+- `/` 须在开头（可有前导空白）或空白后；名字取最长 `[A-Za-z0-9_-]+`；名字后紧跟 `/ . : \` 即不算（排除路径/文件名/网址）。
+- 渲染层自有指令 `/compact`、`/rewind` 置顶并**遮蔽同名技能**（小写去重先者保留）；仅当输入框只有这一个词（trigger.alone）时可选。
+- 技能可见性过滤（enabled 且 rolesAllow）渲染层与主进程同式（[技能系统](../extensions/skills.mdx)、[角色语义](../roles/role-semantics.mdx)）。
+
+## 联想替换语义（`composer-editor.ts` triggerReplaceEnd）
+
+采纳联想只替换「已敲前缀 + 光标后与候选余部**逐字对得上**的部分」，光标后其余文字不动——中文无分词边界，`@词` 会延伸到整段末尾，**不能整词替换**（提交 7d35b0a 的核心语义）。MentionNode 显示为标签但文本恒为 `@名字` 纯文本：发送、复制、主进程认人全走纯文本。
+
+## 共享阈值
+
+`shared/limits.ts`：TASK_MAX_STEPS=100、REPEAT_WARN=3、REPEAT_STOP=5——主进程判定、渲染层引用同一数值生成文案；改阈值两侧行为自动同步（判定语义见 [定时任务](../roles/scheduled-tasks.mdx)）。`shared/effort.ts` 档位表、`shared/context.ts` 窗口自动表同为「主进程决定发送/判定、渲染层决定显示」的纯函数契约（判定见 [Agent Loop](../chat-engine/agent-loop.mdx)）。

@@ -1,0 +1,50 @@
+---
+description: "上下文治理与提示缓存纪律：compaction 触发与边界吸附、缓存还热不动历史、listing 清单随消息下发、工具结果溢出与缓存过期清理、图片跨回合裁剪块边界、⟦deva:*⟧ marker 体系"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/compaction.ts
+    - apps/desktop/src/main/services/tool-results.ts
+    - apps/desktop/src/main/services/image-trim.ts
+    - apps/desktop/src/main/services/listing.ts
+    - apps/desktop/src/main/services/tool-search.ts
+    - apps/desktop/src/main/services/project-doc.ts
+relations:
+  requires:
+    - chat-engine/agent-loop.mdx
+---
+
+# 上下文治理与提示缓存纪律
+
+## 范围与所有权
+
+本档回答：上下文窗口如何被管理、历史何时可改写、提示缓存为何优先。owner：`compaction.ts`（压缩）与 `tool-results.ts`（溢出/清理），协同 `listing.ts`（清单下发）、`image-trim.ts`（图片裁剪）、`tool-search.ts`（工具按需加载）、`project-doc.ts`（AGENTS.md 注入）。
+
+## 首要纪律：提示缓存优先
+
+系统提示词与工具描述只放**固定内容**；一切可变清单（技能/记忆/成员/工具用法）由 `listing.ts` 随消息下发，不进系统提示词。由此推出两条铁律：
+
+1. **缓存还热不动历史**：对历史的任何改写（压缩、删轮、清理）都要付出缓存过期代价，非必要不做。工具结果旧值清理只在缓存已过期时进行（`tool-results.ts`）。
+2. **已告知状态不另存**：清单已随消息告知模型的内容，从历史折叠即可，不引入新的边车状态；压缩/删轮抹掉清单块后由 listing 自动补发全量。
+
+## 压缩（compaction）
+
+- 触发用**真实 usage.input** 优先（模型报告值），而非估算。
+- 压缩边界吸附**真实用户轮**：摘要永远落在用户轮边界，不在工具调用序列中间断开。
+- 摘要失败不动历史（保持原样重试下一轮），宁可超窗报错也不伪造压缩成功。
+- 历史中用 `⟦deva:compaction/auto/notify/insert⟧` marker 标记特殊块（压缩点/自动轮/通知/插入消息），删轮、rewind、展示都按 marker 识别。
+
+## 工具结果的进出
+
+- 溢出（spill）：超限工具结果落盘外置，历史里留引用——边车按 toolUseId 记录，压缩免疫（见 [存储布局](../persistence/storage-layout.mdx)）。
+- 图片跨回合裁剪按固定「块」边界移动，保证前缀字节不变（`image-trim.ts`）——这是缓存纪律的具体体现。
+- 工具按需加载（`tool-search.ts`）：成员工具等延迟注入（DEFERRED_MEMBER_TOOLS），用到才进上下文，避免全量工具表常驻。
+
+## 注入面
+
+- 项目说明：只读工作区根 AGENTS.md，轮首快照注入（快照稳定利于缓存），32KiB 字节限额；仓库内容≠用户意愿，注入带前言框定。
+- 记忆/成员名单/技能清单：全部走 listing 随消息下发（见上文纪律 1）。
+
+## 变更后果
+
+任何触碰历史数组结构的改动（压缩算法、marker、删轮、rewind）都必须同时核对：检查点归属是否错位（[检查点回滚](../persistence/checkpoints-rewind.mdx)）、边车 toolUseId 是否仍可解析（[存储布局](../persistence/storage-layout.mdx)）、listing 补发是否覆盖被抹掉的块。

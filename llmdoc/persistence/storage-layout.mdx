@@ -1,0 +1,47 @@
+---
+description: "会话持久化与 DEVA_HOME 存储布局（数据/会话文件存在哪里）：~/.deva 下 data/chats 一对话一文件+原子写+_index.json 自愈、约 20 个按 toolUseId 记录的边车字段、media blob 内容寻址外置、config.json/profile、便携模式与 DEVA_HOME 整体搬移"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/main/services/chat-store.ts
+    - apps/desktop/src/main/services/media-store.ts
+    - apps/desktop/src/main/services/subagent-store.ts
+    - apps/desktop/src/main/services/config.ts
+    - apps/desktop/src/main/services/profile.ts
+    - apps/desktop/src/main/services/portable.ts
+relations:
+  related:
+    - persistence/checkpoints-rewind.mdx
+    - release/release-and-update.mdx
+    - ux/deliverables-media.mdx
+---
+
+# 存储布局（DEVA_HOME）
+
+## 范围与权威来源
+
+数据根默认 `~/.deva/`（DEVA_HOME 可整体搬移 = 便携模式，`portable.ts`）。本档是目录与文件组织的导览；各文件内部字段以源码头注释为准（`chat-store.ts` 的 StoredSession 约 20 个边车字段逐个有说明）。Git 面板、记忆系统的内部决策**有意不建文档**（git.ts / memory.ts 头注释自洽，数分钟可恢复）。
+
+## 布局速览
+
+| 路径 | 内容 | owner 档 |
+|---|---|---|
+| `config.json` | 应用配置（启用态、布局、locale…） | 本档 |
+| `data/chats/<id>.json` + `_index.json` | 一对话一文件；轻索引 | 本档 |
+| `data/checkpoints/<会话>/<hash>` | 内容寻址检查点 blob | [检查点回滚](../persistence/checkpoints-rewind.mdx) |
+| `data/media/`（内容寻址 blob） | 附件/图片外置存储 | [交付物媒体](../ux/deliverables-media.mdx) |
+| `secrets.json` | safeStorage 加密密钥 | [安全边界](../guardrails/security-boundaries.mdx) |
+| `personas/<id>.md`、`skills/` | 人设与技能目录 | [角色语义](../roles/role-semantics.mdx)、[技能系统](../extensions/skills.mdx) |
+
+## 会话文件语义（chat-store.ts）
+
+- **一对话一文件 + 原子写**（tmp+rename；Windows EPERM 回退直写）；`_index.json` 是可再生的轻索引，损坏自愈（从文件重建）。
+- `Message[]` 是模型上下文唯一真源；渲染层只持展示镜像（[渲染层架构](../ux/renderer-architecture.mdx)）。
+- **边车字段全部按 toolUseId 记录**（proposals/asks/summaries/delivered/background/durations/plans/autotasks/todos/checkpoints/lastKnown/baselines/notices…）→ 对压缩、删轮天然免疫：轮序号会漂移，toolUseId 不会。这是存储层最重要的不变量。
+- bucket 字段已废弃：读忽略、写不产生。
+- 子智能体执行记录 `subagent-store.ts`：每会话 ≤20 条，按 toolIds 随删轮剪枝。
+
+## 变更后果
+
+- 动会话文件 schema → 保持「按 toolUseId 记录」约定与原子写；新增边车字段时想清楚它与压缩/rewind 的交互。
+- 动 DEVA_HOME 解析 → 单实例锁、便携 zip（[发布与更新](../release/release-and-update.mdx)）、检查点相对路径都要联动核对。

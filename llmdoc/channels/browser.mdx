@@ -1,0 +1,44 @@
+---
+description: "内置浏览器：WebContentsView 叠放与收起挪屏幕外继续渲染、BROWSER_CHROME 高度常量双向布局契约、无地址栏产品决策（只给 Deva 用）、CDP 真实输入事件 isTrusted、页面结构文本导向、handoff 请用户登录/验证码"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/browser/index.ts
+    - apps/desktop/src/main/services/browser/host.ts
+    - "apps/desktop/src/main/services/browser/*.ts"
+    - apps/desktop/src/shared/browser.ts
+    - apps/desktop/src/renderer/src/browser-main.tsx
+    - "apps/desktop/src/renderer/src/features/browser/**"
+relations:
+  related:
+    - guardrails/tools-policy.mdx
+    - ux/renderer-architecture.mdx
+    - runtime/process-model.mdx
+---
+
+# 内置浏览器
+
+## 范围与所有权
+
+本档回答：「Deva 浏览器」窗口如何构成、网页如何被摆放与操作、何时交给用户。owner：`services/browser/`（index 约 926 行总控 + host 约 669 行窗口宿主 + pages / page-scripts / url / live）；外框渲染层 `features/browser/`（BrowserChrome / BrowserCapsule 等）与独立入口 `browser-main.tsx`（`browser.html`）。
+
+## 窗口构成与布局契约
+
+- 网页本体是主进程叠放的 **WebContentsView**（原生视图），外框是渲染层页面（tabBar/statusBar）。两者用同一套高度常量 `BROWSER_CHROME`（`shared/browser.ts`）对齐：主进程按它摆放网页位置，外框 CSS 必须一致——这是**双向布局契约**，改常量必须两侧同步。
+- 收起 = 把视图挪到屏幕外**继续渲染**（不销毁、不暂停）；依赖主进程关闭窗口遮挡检测（occlusion）防 Chromium 节流（[进程模型](../runtime/process-model.mdx)）。
+- BrowserUiState 是主→外的状态推送契约（`shared/browser.ts`）。
+
+## 产品决策：无地址栏
+
+浏览器只给 Deva 用，不显示、不可输入网址。唯一例外：handoff 等用户操作时状态条显示当前站点——让用户输密码前确认自己在哪个网站。不要「补全」地址栏。
+
+## 操作语义
+
+- 工具操作经 CDP 发**真实输入事件**（isTrusted=true），页面反爬/焦点行为与真人一致；browser 工具归 exec 类（[工具策略](../guardrails/tools-policy.mdx)）。
+- 页面读取是**结构文本导向**（DOM 结构化文本，非视觉截图为主）——供模型消费。
+- 实时画面（JPEG base64）按 CDP 推送，仅在预览胶囊可见时推（省带宽）。
+- **handoff**：遇到登录/验证码/上传/确认等必须人来做的动作，交还用户；原因集 login / captcha / upload / confirm / other。锁定页不可由 Agent 关闭。
+
+## 变更后果
+
+动 host 的视图定位/收起逻辑 → 先核对 occlusion 关闭与 BROWSER_CHROME 常量两侧一致；动 page-scripts → 它注入进任意网页，保持「结构文本导向、只读优先」姿态。

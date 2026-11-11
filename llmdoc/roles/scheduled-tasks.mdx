@@ -1,0 +1,56 @@
+---
+description: "定时任务与密封执行：创建时批准执行时零交互的授权信封、sealedDecision 拒绝交互创建类工具、TASK_MAX_STEPS=100 与原地打转刹车、30s tick 串行调度队列、cron+DST 纯函数引擎、handoff 交付结果、Jev 决策运行时前瞻契约"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/tasks.ts
+    - apps/desktop/src/main/services/tasks-types.ts
+    - apps/desktop/src/main/services/schedule.ts
+    - apps/desktop/src/main/services/scheduler.ts
+    - apps/desktop/src/main/services/sealed.ts
+    - apps/desktop/src/main/services/handoff.ts
+    - apps/desktop/src/main/services/decision.ts
+    - apps/desktop/src/shared/limits.ts
+relations:
+  requires:
+    - guardrails/tools-policy.mdx
+  related:
+    - chat-engine/agent-loop.mdx
+    - channels/remote-channels.mdx
+---
+
+# 定时任务与密封执行
+
+## 范围与所有权
+
+本档回答：定时任务如何被授权、无人值守轮如何被约束、调度如何算时间。owner：`tasks.ts` / `tasks-types.ts`（授权信封，头注释明言核心约束）、`sealed.ts`（密封判定，纯函数可单测）、`scheduler.ts`（调度循环）、`schedule.ts`（cron+DST 纯函数引擎）、`handoff.ts`（结果交付）。
+
+## 授权信封：创建时批准、执行时零交互
+
+这是**用户明确的铁律**（`tasks-types.ts` 头注释）：任务创建时用户在确认名片上批准（日程/人格/模型，见下 UI 契约），触发执行时**绝不再弹任何确认、绝不挂起**。
+
+- 信封只含 persona + model 两项授权。
+- `sealedDecision`（`sealed.ts`）：文件读写与命令执行**恒放行**（2026-10-09 零限制语义，[工具策略](../guardrails/tools-policy.mdx)）；拒绝的是交互/创建类工具集 SEALED_FORBIDDEN（ask_user、run_subagent、send_to_subagent、create_skill、propose_agent、create_mcp、create_task、exit_plan、memory_write、memory_delete——多为纵深防御，部分已从工具表剔除）与未知工具名。`skill` 与 `todo_write` 在密封轮是放开的。
+- 拒绝时回灌清晰 tool_result 让模型改道，不整轮硬失败。定时任务派出的子智能体同样走 sealed 判定（子智能体本身禁再派生）。
+
+## 步数与打转约束（全局唯二的循环上限）
+
+`TASK_MAX_STEPS=100`（到点后给一次收尾请求）；原地打转刹车 REPEAT_WARN=3 / REPEAT_STOP=5。主轮和子智能体没有这些上限（[Agent Loop](../chat-engine/agent-loop.mdx)）。阈值定义在 `shared/limits.ts`，渲染层引用同一数值生成文案（[输入契约](../ux/input-contracts.mdx)）。
+
+## 调度语义
+
+- `scheduler.ts` 30s tick、串行队列、同 id 去重；追赶只补最近一次错过的触发（不积压补跑）。
+- 连续错误自动暂停任务（防雪崩）。
+- 时区捕获于创建时刻；DST 语义：spring-forward 跳过、fall-back 取首次（`schedule.ts` 纯函数 planFires/countMissed，无测试运行器但按可单测标准设计——见 [发布与更新](../release/release-and-update.mdx) 的验证策略）。
+
+## 结果交付（handoff）
+
+任务与对话绑定：结果以任务身份发回对话（`ChatMessage.handoff`）。deliver_result 两态：needs_action（需用户介入）或完成告知；长告知用占位 stubLongInforms 防止超长。**唯一授权时刻**是渲染层 TaskConfirmCard——create_task 只落草稿，名片上「创建」才真正建任务与独占会话；名片不再有白名单/通知开关（零交互铁律的 UI 面）。
+
+## 前瞻契约：Jev 决策运行时
+
+`decision.ts` 是厂商中立的置信度闸门运行时（state+questions → [0,1] 置信度 → 阈值闸门），绝不走 streamChat、绝不经 IPC。**当前无调用方**（Phase 3 任务侧预留）；渲染层 ProviderPurpose 'decision'（adapter 'jev'）类型已存在但不进对话模型选择器。读到它按「已接线的前瞻契约」理解。
+
+## 变更后果
+
+动 SEALED_FORBIDDEN 或工具表剔除 → 两侧同步并复核「零交互」铁律不被绕过；动 cron 引擎 → 保持纯函数性（无 IPC、可单测）。

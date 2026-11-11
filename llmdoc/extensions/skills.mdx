@@ -1,0 +1,38 @@
+---
+description: "技能系统：SKILL.md 渐进披露、缺省即启用语义（write_file 落盘即可用）、allowed-tools 仅建议文本不提权、目录 watcher 实时推送、create-skill 元技能、删除走系统回收站"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/skills.ts
+    - apps/desktop/src/main/services/frontmatter.ts
+relations:
+  related:
+    - extensions/mcp.mdx
+    - ux/input-contracts.mdx
+    - roles/role-semantics.mdx
+---
+
+# 技能系统
+
+## 范围与所有权
+
+本档回答：技能如何被定义、发现、启用、调用。owner：`skills.ts`（约 782 行）与 `frontmatter.ts`（手写 YAML 子集解析器，服从免装铁律）。
+
+## 模型：渐进披露
+
+技能 = 技能目录下的 SKILL.md（frontmatter + 正文）。上下文经济：清单（名字+描述）随消息下发（listing，见 [上下文治理](../chat-engine/context-management.mdx)）；正文只在模型调用 `skill` 工具加载该技能时才进上下文——「渐进披露」。
+
+## 关键语义（改动前必读）
+
+- **缺省即启用**：frontmatter 缺 enabled 字段视为启用（`!== false` 判定）。推论：Agent 用 write_file 落盘一个新技能目录，无需任何注册步骤即进入可用清单——`create-skill` 元技能（唯一内置技能）依赖此语义。
+- **allowed-tools 只是建议文本**，绝不做任何提权/收窄执行——工具能力只由工具表与类别决定（[工具策略](../guardrails/tools-policy.mdx)）。把 allowed-tools 当安全机制是错误理解。
+- 可见性双过滤：enabled 且 rolesAllow（可用角色限定，见 [角色语义](../roles/role-semantics.mdx)）；渲染层联想与主进程用同一过滤式。
+- 目录 watcher 实时推送变化；删除技能走系统回收站（可恢复），非硬删。
+
+## 调用面
+
+用户输入 `/技能名` 走 slash 契约（[输入契约](../ux/input-contracts.mdx)）；渲染层自有指令 `/compact`、`/rewind` 会遮蔽同名技能。模型侧经 `skill` 工具加载。
+
+## 变更后果
+
+改 frontmatter 字段 → `frontmatter.ts` 是手写子集解析器，不是完整 YAML；新增字段先确认解析器覆盖。改启用语义（缺省值）会瞬间改变所有存量技能的可用性，属破坏性变更。

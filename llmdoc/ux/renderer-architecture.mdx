@@ -1,0 +1,55 @@
+---
+description: "渲染层架构：redesign/ 是权威 UI（旧 IDE 壳已整体删除）、ChatFirstShell 单体与 features/ 分工、Context+hooks store 无状态库、真值在主进程的瘦客户端原则、mock/ 实为类型+种子非 mock 服务、主题/i18n/字号首帧防闪、头像 WYSIWYG 与配色产品口径"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/renderer/src/App.tsx
+    - apps/desktop/src/renderer/src/main.tsx
+    - apps/desktop/src/renderer/src/redesign/ChatFirstShell.tsx
+    - apps/desktop/src/renderer/src/store/chat.tsx
+    - apps/desktop/src/renderer/src/features/chat/blocks.tsx
+    - apps/desktop/src/renderer/src/components/humation.tsx
+    - apps/desktop/src/renderer/src/theme/ThemeContext.tsx
+    - apps/desktop/src/renderer/src/mock/models.ts
+    - apps/desktop/src/renderer/src/mock/extensions.ts
+relations:
+  requires:
+    - runtime/ipc-contract.mdx
+  related:
+    - ux/input-contracts.mdx
+    - channels/browser.mdx
+    - channels/remote-channels.mdx
+---
+
+# 渲染层架构
+
+## 范围与所有权
+
+本档回答：UI 代码在哪层、状态怎么管、哪些目录名有误导。`App.tsx` 头注释即判决书：**旧 IDE 壳（AppShell+活动栏/侧面板/底部终端/状态栏）连同其 store 已整体删除**。
+
+## 分层判决
+
+- **`redesign/` 是权威生产 UI**，不是草稿：App.tsx 只渲染 ChatFirstShell。它是个约 8753 行单体（窗口 chrome、IconRail、会话列表、Conversation、Composer、MemberAsks、GitWidget、TaskBar、Settings 模态、PersonaEditor…约 60 个组件）——改 UI 前先在文件内检索定位，勿按目录直觉找。
+- **`features/` 是被 shell 消费的领域组件库**：`features/chat/blocks.tsx`（约 2266 行块渲染库：BlockView/Timeline/groupBlocks/ProcessFold/交付卡）、`features/chat/`（TaskConfirmCard、ModelSetupCard、DeliverablesCard 等）、`features/browser/`、`features/settings/ModelSettings`。划分现状：ModelSettings 独立在 features/，其余设置页内嵌 shell——按现状描述，无既定标准。
+- **`store/` = React Context + hooks，无 zustand/redux**。Provider 嵌套顺序固定在 `main.tsx`：Theme → I18n → Dialog → Toast → Models → Extensions → Workspace → Chat → Tasks → Profile。
+- **`mock/` 是命名陷阱**：实为渲染层类型定义 + 种子/预设数据（Provider/ModelDef、Skill/McpServer/Persona 类型与 providerPresets），**不是** mock LLM 服务、不参与测试。存储是真实的（IPC 到 `~/.deva`）。
+
+## 瘦客户端原则
+
+真值在主进程：会话历史、工具执行、密钥、任务真相都在 main；渲染层持「左侧会话列表 + 当前会话」镜像，把 `chat:event` 流累积成可渲染的 ChatBlock，重开会话时从主进程重建（[IPC 契约](../runtime/ipc-contract.mdx)、[存储布局](../persistence/storage-layout.mdx)）。tasks store 只镜像 + 全量广播，不做本地乐观更新。notice vs toast 分流：**会落盘的**终止提示（truncated/empty/refused/restored/aborted/step_limit/repeated）做成 notice 块；**不落盘**的提示一律 toast——气泡重启即消失，避免与历史不一致。
+
+## 首帧防闪三件套
+
+theme（`<html data-theme>`）、locale（lang 属性）、chatFontSize（`data-chat-fs`）都在首帧渲染前从 `config.getSync()` 同步应用（main.tsx 显式注释）。持久化主存 `~/.deva/config.json`、localStorage 兜底。三态主题 light/dark/system 走 token 语义层（切组件不改）；同步 Windows titleBarOverlay 图标色。
+
+## 头像系统（WYSIWYG 不变量 + 产品口径）
+
+`components/humation.tsx`（约 967 行）：确定性 seed→纯 SVG（无 wasm/网络，契合 CSP），全应用唯一头像渲染面。AvatarSpec 以**不透明 JSON 字符串**贯穿 main/preload，仅此文件解释；所见=所存=所渲染，无 seed 漂移。产品口径（注释明言"别改回来"类决策）：13 种底板形状+探出构图（2026-11-09）；配色池刻意收窄（肤色只收浅-中暖调、背景三档池）——勿按「光谱要全」补回。
+
+## 有意不建文档的相邻面
+
+i18n（isEn() 就地双语 + 检测顺序，`locale.ts`/`i18n/` 自洽）；布局尺寸持久化（`resizable.tsx` 规范明确）；胶囊排序（`dockOrder.ts` CSS order 递增）。失效指针：`i18n`/`ThemeContext` 注释引用的 `docs/modules/ui-theming-i18n.md` 与多处 `design/*.html` 对比稿**不存在**（[安全边界](../guardrails/security-boundaries.mdx)）。遗留清理候选：`store/workspace.tsx` 仅剩 activeProject 一处消费（store/chat.tsx），删除时需改该处。
+
+## 变更后果
+
+新增 Provider/扩展类型 → 落在 `mock/`（类型真源）而非新建 model 文件；动 Provider 嵌套顺序 → 依赖顺序敏感（Chat 依赖 Workspace 的 focusRoot）；动 ChatBlock 类型 → 与主进程 DisplayBlock 对齐（[IPC 契约](../runtime/ipc-contract.mdx)）。
