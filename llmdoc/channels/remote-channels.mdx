@@ -7,6 +7,10 @@ code:
     - apps/desktop/src/renderer/src/redesign/BotsPane.tsx
 relations:
   related:
+    - channels/remote-contract.mdx
+    - channels/telegram-adapter.mdx
+    - channels/remote-lifecycle.mdx
+    - channels/android-client-prereqs.mdx
     - chat-engine/agent-loop.mdx
     - ux/renderer-architecture.mdx
     - roles/scheduled-tasks.mdx
@@ -17,7 +21,7 @@ relations:
 
 ## 范围与所有权
 
-本档回答：手机端/IM 如何接入桌面 Deva、信任边界在哪、消息如何被聚合。owner：`services/remote/`（hub 约 1265 行平台无关层 + feishu/telegram 适配器 + onboard 配对 + store/paginate/types 分层契约）。渲染层机器人面板 `BotsPane.tsx` 只展示与触发。
+本档回答：手机端/IM 如何接入桌面 Deva、信任边界在哪、消息如何被聚合。owner：`services/remote/`（hub 约 1265 行平台无关层 + feishu/telegram 适配器 + onboard 配对 + store/paginate/types 分层契约）。渲染层机器人面板 `BotsPane.tsx` 只展示与触发。细粒度展开：[契约类型逐项核对](remote-contract.mdx) / [Telegram 适配器](telegram-adapter.mdx) / [生命周期与数据落点](remote-lifecycle.mdx) / [安卓客户端前置](android-client-prereqs.mdx)。
 
 ## 架构分层
 

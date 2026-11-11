@@ -61,6 +61,18 @@
     },
     "release/release-and-update.mdx": {
       "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
+    },
+    "channels/remote-contract.mdx": {
+      "validatedRevision": null
+    },
+    "channels/telegram-adapter.mdx": {
+      "validatedRevision": null
+    },
+    "channels/remote-lifecycle.mdx": {
+      "validatedRevision": null
+    },
+    "channels/android-client-prereqs.mdx": {
+      "validatedRevision": null
     }
   },
   "convergence": {

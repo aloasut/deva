@@ -1,0 +1,80 @@
+---
+description: "远程通道平台无关契约逐项核对：Platform/ChannelId/ChatAddress/RemoteUser/InboundMessage/InboundAction/ActionValue/ActionResult/TurnBlock/TurnStatus/TurnPage/PromptView/NoticeView/MessageHandle/ChannelState 与 AdapterHost/RemoteAdapter 签名（源 types.ts）"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/main/services/remote/types.ts
+    - apps/desktop/src/main/services/remote/hub.ts
+    - apps/desktop/src/main/services/remote/telegram.ts
+relations:
+  related:
+    - channels/remote-channels.mdx
+    - channels/telegram-adapter.mdx
+    - channels/remote-lifecycle.mdx
+---
+
+# 远程通道契约类型（types.ts 逐项核对）
+
+方向约定：**hub 产出** TurnPage / PromptView / NoticeView 交给适配器渲染；**适配器产出** InboundMessage / InboundAction 交给 hub。分页与限频都由 hub 驱动，取值来自适配器的 `pageChars` / `minUpdateMs`（[Telegram 取值](telegram-adapter.mdx)）。
+
+## 基础标识
+
+- `Platform` = `'feishu' | 'telegram'`。
+- `ChannelId` = `string`：一个「通道」= 用户添加的一个机器人实例，id 由 Deva 生成（`genId('bot')`，形如 `bot_<base36 时间戳>_<base36 随机>`；scanId 同构，前缀 `scan`）。
+- `ChatAddress` = `{ channel: ChannelId; chatId: string }`：某机器人的一个私聊会话；`chatId` 为平台原生 id（飞书 chat_id / Telegram chat.id，Telegram 私聊即用户 id）。
+- `RemoteUser` = `{ id: string; name?: string }`：平台内稳定用户 id（飞书 open_id / Telegram user.id），**配对白名单键**。
+- `MessageHandle` = `string`：适配器发出的消息句柄（Telegram 即 `String(message_id)`），供原地更新与删除。
+
+## 入站（适配器 → hub）
+
+- `InboundMessage` = `{ chat: ChatAddress; user: RemoteUser; text: string; kind: 'text' | 'unsupported'; messageId?: MessageHandle }`。`text` 是纯文本（适配器已去 @ 提及）；非文本消息为空串 + `kind: 'unsupported'`。`messageId` 供 hub 删指令消息（飞书不允许删用户消息时留空）。
+- `InboundAction` = `{ chat: ChatAddress; user: RemoteUser; value: ActionValue; messageId?: MessageHandle; form?: Record<string, string | string[]> }`：按钮回传动作（适配器把平台回调解成此形状）；`form` 仅问答卡提交时有（字段名 → 文本或多选数组）。
+- `ActionValue`（按钮 value 由 hub 生成、适配器原样塞进按钮并原样还回）8 个变体，判别字段 `k`：
+  - `{ k: 'ask'; key: string }` — 问答卡提交（key = 交互卡 key）。
+  - `{ k: 'plan'; key: string; d: 'approve' | 'keep' | 'ignore' }` — 计划审阅决议。
+  - `{ k: 'mount'; key: string }` — 跳过工作区挂载。
+  - `{ k: 'use'; sid: string }` — 切换到某对话（/list 按钮、「切换到此对话」通知按钮）。
+  - `{ k: 'new'; pid: string }` — /new 角色卡选中某角色（pid = 角色 id）。
+  - `{ k: 'autotask'; sid: string; tool: string; a: 'create' | 'dismiss' }` — 定时任务名片决议；`tool` = create_task 的工具调用 id；草稿从会话历史取（hub `toolInput`），**无状态、重启后按钮仍有效**。
+  - `{ k: 'agent'; sid: string; tool: string; a: 'accept' | 'reject' }` — 角色名片决议（propose_agent 的工具调用 id）。
+  - `{ k: 'stop'; turn: string }` — 停止某回合（turn = turnId）。
+- `ActionResult` = `{ ok: boolean; message: string }`：动作处理结果，适配器据此给平台内即时反馈（飞书 toast / Telegram `answerCallbackQuery` 提示）。
+
+## 出站视图（hub → 适配器）
+
+- `TurnBlock` = `{ kind: 'text' | 'notice' | 'error'; text: string }` 的三者联合。工具调用不进 IM 正文，只化作状态行「正在…」。
+- `TurnStatus` = `'running' | 'waiting' | 'retrying' | 'done' | 'aborted' | 'error'`。
+- `TurnPage` = `{ turnId: string; sessionTitle: string; personaName: string; index: number; last: boolean; blocks: TurnBlock[]; status: TurnStatus; statusText?: string; elapsedSec: number }`。内容超长由 hub 按 `adapter.pageChars` 分页（每页一条平台消息），**只有末页带真实状态与停止按钮**，前面页是已定格正文（hub flushPost 里非末页 status 置 `'done'`、statusText 置 undefined）。
+- `PromptView`（交互卡 / 名片）5 个 `kind`，均有 `key` 与 `sessionTitle`（名片类还有 `sessionId`）：
+  - `ask`：`{ key, sessionTitle, questions: AskQuestion[], state: 'open' | 'answered' | 'cancelled', answers?: string[] }`（AskQuestion 来自 services/chat）。
+  - `plan`：`{ key, sessionTitle, plan: string, state: 'open' | 'approve' | 'keep' | 'ignore' | 'cancelled' }`。
+  - `mount`：`{ key, sessionTitle, tool: string, path: string, state: 'open' | 'mounted' | 'skipped' | 'cancelled', root?: string }`。
+  - `autotask`：`{ key, sessionId, sessionTitle, title, prompt, schedule: string | null, nextRunAt: number | null, personaName, modelName, state: 'open' | 'created' | 'dismissed', error?: string }`；`schedule` 为 null 时 `error` 给原因（日程无效）。
+  - `agent`：`{ key, sessionId, sessionTitle, name, desc, prompt, state: 'open' | 'accepted' | 'rejected' }`。
+- `NoticeView` = `{ title?: string; text: string; tone?: 'info' | 'success' | 'warning' | 'error'; buttons?: { label: string; value: ActionValue; primary?: boolean }[]; buttonLayout?: 'row' | 'column' }`。`row` = 横排一行（少量快捷动作），`column` = 每钮独占一行撑满宽（列表选择）。指令回执 / 定时任务完成通知都走它。
+
+## 适配器接口（RemoteAdapter / AdapterHost）
+
+- `ChannelState` = `'off' | 'connecting' | 'connected' | 'error'`。
+- `AdapterHost`（hub 交给适配器的回调，实现在 hub `startChannel`）：
+  - `onMessage(msg: InboundMessage): void` — hub 内部转异步（平台回调用，飞书 3s 内要 ack）。
+  - `onAction(action: InboundAction): Promise<ActionResult>`。
+  - `onState(state: ChannelState, error?: string): void`。
+- `RemoteAdapter`（新增平台 = 实现它并在 index.ts `ADAPTERS` 登记工厂，hub 不改）：
+  - `readonly id: ChannelId`、`readonly platform: Platform`。
+  - `readonly minUpdateMs: number` — 两次原地更新同一条消息的最小间隔（平台限频，hub `scheduleFlush` 用）。
+  - `readonly pageChars: number` — 单页正文字符预算（hub `flushPost` 调 `paginate(blocks, pageChars)`）。
+  - `start(host: AdapterHost): Promise<void>` / `stop(): Promise<void>`。
+  - `renderTurn(chat, page: TurnPage, handle?: MessageHandle): Promise<MessageHandle | undefined>` — 有 handle 即原地更新。
+  - `renderPrompt(chat, view: PromptView, handle?: MessageHandle): Promise<MessageHandle | undefined>`。
+  - `sendNotice(chat, view: NoticeView): Promise<MessageHandle | undefined>` — 只发新消息，无 handle 参数。
+  - `deleteMessage(chat, handle: MessageHandle): Promise<void>` — 失败抛错，hub 忽略。
+  - `openDirect(userId: string, view: NoticeView): Promise<string | undefined>` — 按用户 id 主动开私聊，返回该私聊 chatId（扫码创建后机器人先打招呼补 chatId）。
+
+## 渲染层镜像
+
+preload 把主进程 `BotView` / `ScanEvent` 镜像为 `BotPlatform` / `BotReplyMode` / `BotReplyScope` / `BotView` / `RemoteState` / `BotScanEvent`（`state` 内联为 `'off' | 'connecting' | 'connected' | 'error'`，与 `ChannelState` 同集）。与桌面 IPC 的对应见[生命周期](remote-lifecycle.mdx)。
+
+## 变更后果
+
+改任何类型字段名 → 本档与 types.ts 必须同步核对；给 `ActionValue` 加变体 → Telegram 侧注意 64 字节 callback_data 上限（[编码方案](telegram-adapter.mdx)）。

@@ -1,0 +1,70 @@
+---
+description: "远程通道生命周期与数据落点：飞书扫码 / Telegram 贴 token+扫码认领创建、启用 launch、长轮询重连与退避、停止时序；6 位邀请码 /pair 配对白名单；指令解析在 hub；config.json remote.bots[]、secrets remote:<botId>:<field>、会话绑定 bindings、chats 落盘路径"
+kind: architecture
+code:
+  paths:
+    - apps/desktop/src/main/services/remote/index.ts
+    - apps/desktop/src/main/services/remote/hub.ts
+    - apps/desktop/src/main/services/remote/store.ts
+    - apps/desktop/src/main/services/remote/telegram-onboard.ts
+    - apps/desktop/src/renderer/src/redesign/BotsPane.tsx
+relations:
+  related:
+    - channels/remote-channels.mdx
+    - channels/remote-contract.mdx
+    - channels/telegram-adapter.mdx
+---
+
+# 远程通道生命周期与数据落点
+
+涉及面：`services/remote/index.ts`（IPC 与生命周期）、`store.ts`（持久化配置）、`hub.ts`（配对/指令/绑定）、`telegram-onboard.ts`（认领）；渲染层 `BotsPane.tsx` 只展示与触发。
+
+## 创建（两条路，都经扫码定主人）
+
+入口 IPC `remote:scan-start`（platform, opts?`{ token? }`）→ 返回 `{ ok: true, scanId, qr（二维码 data URL，QRCode.toDataURL(scan.url, { margin: 1, width: 360 })）, link?, userCode?, expiresAt }`；结果经事件 `remote:scan`（`ScanEvent`：`done{botId}` / `denied` / `expired` / `cancelled` / `error{error}`）推回。成功后主进程 `addBot`（`enabled: true`、`replyMode: 'stream'`、`scope: DEFAULT_SCOPE`）并存密钥、立即 `launch`。
+
+- **飞书**：扫码即在平台上创建应用拿凭据（feishuScan → startFeishuScan），扫码人 openId 直接进 `users`（chatId 先空串，连上后打招呼补）。
+- **Telegram**（两步，`telegramScan`）：
+  1. 贴 Token：格式校验 `/^\d+:[\w-]{20,}$/`，`fetchTelegramMe`（getMe）验证，按 `settings.botId === me.id` 查重（同机器人只能一处收消息）。
+  2. 扫码认领（`telegram-onboard.ts` `startTelegramLink(token, me)`）：二维码内容 `https://t.me/<me.username>?start=<code>`，`code = randomBytes(9).toString('base64url')`（72 位随机，`LINK_TTL_MS = 10 * 60_000`）；手机扫码打开机器人点 Start，客户端发出 `/start <code>`（正则 `^/start(?:@<username>)?\s+<code>$`，i）。认领期间独立长轮询 `getUpdates`（`allowed_updates: ['message']`，单次 timeout 取剩余秒数封顶 25，HTTP 超时 `(left + 15) * 1000`；409 直接报「被其他程序占用，请先停掉那边」；命中后补一次 `getUpdates { offset, timeout: 0 }` 确认掉已收更新）。返回 `TelegramLink { url, expiresAt, outcome: Promise<LinkOutcome>, cancel() }`，`LinkOutcome` = done`{userId, userName?}` / expired / cancelled / error`{message}`，永不 reject。
+
+创建即存：`settings: { botId: me.id, username: me.username }`，`secrets: { botToken: token }`；认领人是 `users[0]`（BotsPane 里首行打「主人」标签）。
+
+## 启用 → 连接 → 重连 → 停止
+
+- **启用**：`remote:set-enabled` → `launch(id)` → `ADAPTERS[platform](bot)` 工厂（telegram 从密钥库取 `botToken`，丢了报「机器人 Token 丢失，请删除后重新添加。」）→ `startChannel(adapter)`（内部先 `stopChannel` 旧实例）。启动时 `registerRemoteIpc` 对所有 `enabled` 机器人自动 `launch`（失败只记日志不阻塞启动）。
+- **连接/重连**：适配器 `start` → `poll` 长轮询；退避、409/429/401 处置见 [telegram-adapter](telegram-adapter.mdx)。连上后 hub `greetPending` 对 chatId 为空的主人 `openDirect` 打招呼（「已连接到 Deva」+ HELP），借返回值补 `chatId`（`setUserChat`）。
+- **停止**：`stopChannel(id)` = channels 表删除 + `pairing.delete(id)` + `adapter.stop()`（abort 长轮询）；`stopAllChannels` 在退出时序里于 MCP 之后调（[进程模型](../runtime/process-model.mdx)）。`remote:delete-bot` = `stopChannel` + `deleteSecretsByPrefix('remote:<id>:')` + `deleteBot`（平台上的机器人本体不受影响）。
+
+## 配对白名单与 /pair 邀请
+
+- 入站消息/动作**只认 `bot.users` 白名单**（hub `isAuthorized`：`user.id` 在 `users` 里）；未配对来话只处理 `/pair <6位码>`（正则 `^\/pair\s+(\d{6})$`），其余回「尚未配对」引导。
+- 邀请码（hub `issuePairCode`）：`String(randomInt(0, 1_000_000)).padStart(6, '0')`，`PAIR_TTL_MS = 10 * 60_000`，错满 `PAIR_MAX_FAILURES = 5` 次作废，新码生成即顶旧码；面板展示 `/pair <code>`，离开详情页自动 `pairCancel`。`tryPair` 成功 → 写入 `users`（含当前 chatId）并发「配对成功」通知。`removePairedUser` 移除用户时连带删其 chatId 的绑定。
+- 扫码创建的机器人「扫码人即主人」直接在白名单里；其他人（含第二台手机）都走邀请码。
+
+## 指令解析在 hub（不在适配器）
+
+- 适配器只做 `stripMention` 归一化（`/cmd@本机器人` → `/cmd`）；`BOT_COMMANDS` 菜单注册（setMyCommands：new/list/stop/status/help）与 hub `runCommand` 的 case 是**跨层同名约定**，改名须两侧同步。
+- hub `handleMessage`：鉴权 → 补 chatId → `clearTrail` → 非文本回「暂时只支持文字消息。」→ 指令正则 `^\/(\w+)(?:\s+([\s\S]*))?$` → `runCommand(chat, name, arg, trail)` 处理 `help`/`start`/`pair`/`new`/`list`/`stop`/`status`；**返回 false（不是指令）则原样进对话**——`/技能名 …` 与桌面输入框同行为。
+- 普通消息 `sendToSession`：无绑定则 `createSession`（默认角色 `pickPersona(channel, '')` → `DEFAULT_PERSONA_ID`，范围限 personas 且不含默认角色才取范围第一个）；单题问答卡开着时文字直接当答案（`rt.answerAsk`）；忙时 `rt.insert` 插队；否则 `rt.send`（`workspaceRoot: null`、`modelRef`、`effort` 落档）。回合经 `ensureTrack(turnId, sid, eager=true)` + `addPost` 立刻出「进行中」卡。
+- 指令消息「用完即删」：`Trail` 记「用户指令 + 机器人回执」句柄，点掉按钮或来了新消息就 `clearTrail` 全删（Telegram 私聊可删用户消息，飞书不行故飞书不记用户那条）。
+- `/list`：`listSessions()` 过滤 archived 与成员会话（`parentId`）与范围外，按 updatedAt 倒序取前 `LIST_MAX = 20`，每条一枚按钮（`{ k: 'use', sid }`）。
+
+## 数据落点
+
+| 数据 | 位置 | 说明 |
+|---|---|---|
+| 机器人配置 | `~/.deva/config.json` → `remote.bots[]` | `BotConfig { id, platform, name, enabled, createdAt, replyMode, scope, users, bindings, settings }`；store.ts 读写（`listBots`/`addBot`/`updateBot`/`deleteBot`），读取时逐字段 normalize |
+| Token 等密钥 | `~/.deva/secrets.json` | 键 `remote:<botId>:<field>`（`SECRET_KEY`，telegram 的 field 是 `botToken`，飞书是 `appSecret`）；Electron `safeStorage` 加密（DPAPI/Keychain/libsecret），**渲染层只写不读**，解密只在主进程 |
+| 会话绑定 | `BotConfig.bindings`（config.json 内） | `Record<私聊 chatId, Deva 对话 id>`；hub `bind`/`boundSession` 维护，绑定的对话被移出回复范围或已删则视同未绑定 |
+| 对话正文 | `<DEVA_HOME>/data/chats/<id>.json` + 索引 `_index.json` | 一对话一文件（[存储布局](../persistence/storage-layout.mdx)）；名片决议态 `proposals` / `autotasks` 记在 StoredSession 边车字段 |
+
+`DEVA_HOME` 环境变量覆盖根目录（默认 `~/.deva`，`getDevaHome()`）。回复范围 `ReplyScope { mode: 'all' | 'personas' | 'sessions', personas, sessions }`（`DEFAULT_SCOPE` 全部）：判定在 hub（`allows`/`inScope`），推送与 /list、/new、use 动作同口径；sessions 模式下手机上 `/new` 的对话自动纳入范围（`createSession` 里补写）。
+
+## 桌面 IPC 面（preload `window.deva.remote`）
+
+invoke 通道：`remote:get-state` / `remote:scan-start` / `remote:scan-cancel` / `remote:set-enabled` / `remote:set-reply-mode` / `remote:set-scope` / `remote:delete-bot` / `remote:pair-code` / `remote:pair-cancel` / `remote:remove-user`；主→渲染推送事件：`remote:changed`（`RemoteState`）与 `remote:scan`（`BotScanEvent`）。preload 方法名 `getState/scanStart/scanCancel/setEnabled/setReplyMode/setScope/deleteBot/pairCode/pairCancel/removeUser/onChanged/onScan`。BotsPane 的 `ScanModal` 分 `token → loading → waiting → failed` 四相（Telegram 第一屏还本地生成一张指向 `https://t.me/BotFather` 的二维码引导建机器人）。
+
+## 变更后果
+
+改创建/配对流 → 密钥键前缀 `remote:<id>:` 与删除清理必须同步；改 hub 指令 → `BOT_COMMANDS` 与 HELP 文案同步；改 `BotConfig` 字段 → store.ts `normalize` 的兼容回填同步。

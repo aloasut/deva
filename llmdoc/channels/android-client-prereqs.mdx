@@ -1,0 +1,41 @@
+---
+description: "安卓客户端前置清单：Deva 主进程现状零入站端点（远程通道全主动出站）的边界核实，安卓客户端与 Deva 通信需要新增的入站端点、鉴权配对、事件推送面、回合入口、媒体送达清单（只列不做）"
+kind: guide
+code:
+  paths:
+    - apps/desktop/src/main/services/remote/hub.ts
+    - apps/desktop/src/main/services/remote/types.ts
+    - apps/desktop/src/main/services/chat-bus.ts
+    - apps/desktop/src/preload/index.ts
+relations:
+  related:
+    - channels/remote-channels.mdx
+    - channels/remote-contract.mdx
+    - channels/telegram-adapter.mdx
+    - channels/remote-lifecycle.mdx
+    - guardrails/security-boundaries.mdx
+---
+
+# 安卓客户端前置清单（现状边界 → 需要新增什么）
+
+## 现状边界（2026-11 已对代码核实）
+
+**Deva 主进程没有任何入站 HTTP/WS 服务端点**（对 `apps/desktop/src/main` 全量检索 `createServer` / `.listen(` / `WebSocketServer` 零命中）；远程通道全部是**主动出站**——Telegram getUpdates 长轮询、飞书长连接，所以 IM 模式无需公网 IP。唯一暴露给前端的「入口」是 Electron IPC（`preload/index.ts` 暴露 `window.deva.*`，含 `remote` 段），只在桌面渲染进程内可达，安卓拿不到。
+
+结论：安卓客户端**不能照抄 IM 适配器模式**（那等于给 Deva 写一个 IM 平台），必须在 Deva 主进程**新增入站端点**，把 hub 已有的语义面暴露出去。
+
+## 安卓客户端需要 Deva 新增的清单（只列不做）
+
+1. **入站传输端点**：main 进程新增 HTTP/WS 监听；生命周期要挂进退出时序（`stopAllChannels` 之后的停止顺序），并把「正在监听」纳入 `ChannelState` 式的状态上报。
+2. **传输层鉴权与设备配对**：需要新凭据类型，**不得复用 botToken**（那是 Telegram 的身份）；新密钥沿用 secrets 键约定加新前缀（现格式 `remote:<botId>:<field>`，见[生命周期](remote-lifecycle.mdx)）。配对 UX 可复用「二维码 + 一次性码」同构（`telegram-onboard.ts` 的认领流程即模板）。
+3. **事件推送面**：进程内已有现成多订阅者总线 chat-bus（`onChatEvent` / `onAppNotice` / `publishSessionsChanged`，hub 就是一个订阅者）——新增一个订阅者把 `ChatStreamEvent` / `AppNotice` 经 WS/SSE 推给安卓；事件形状与 `preload/index.ts` 的 `ChatStreamEvent` 对齐即可，无需新造事件。
+4. **回合入口**：hub 用的就是 `chatRuntime` 函数入口（`send` / `insert` / `answerAsk` / `decidePlan` / `answerMount` / `resolveAutotask` / `resolveProposal` / `abort` / `isBusy`）——入站端点直接调同一组函数，安卓发起的回合与桌面**同落盘、同检查点、同安全闸门**（[远程通道语义](remote-channels.mdx)）。
+5. **视图语义直接复用**：`TurnPage` 聚合与分页已由 hub + `paginate` 完成，安卓只是「另一个适配器」；`pageChars` / `minUpdateMs` 是平台参数，安卓端自定取值即可。`PromptView` / `NoticeView` / `ActionValue` 原样可用——**64 字节 `j`/`p` 编码是 Telegram callback_data 专属限制**，安卓走自己的传输不必继承。
+6. **传输层错误语义**：`reconnecting` 事件已带 `attempt/max`；WS 断线重连协议需自定义（可对照 telegram poll 的退避表：1s 起 ×2 封顶 30s）。
+7. **媒体/文件送达**：现有 `TurnBlock`（text/notice/error）与 `NoticeView`（文本 + 按钮）**不含任何附件**——IM 通道只在状态行提一句「正在交付文件」；安卓若要收交付文件需新增通道（`media-store` 已有落盘可依托）。
+8. **安全边界**：入站监听 = 新攻击面，鉴权必须在任何会话语义之前（对照「只认已配对用户」）；局域网明文不可接受，传输加密方案按 [security-boundaries](../guardrails/security-boundaries.mdx) 定。
+9. **可达性决策点**（本文不定）：局域网直连（简单但离家不可用）vs 公网中继/隧道（对照 IM 模式「零公网依赖」的优点会丢失）；无论哪种，第 1-2 条都是前置。
+
+## 变更后果
+
+动此清单任何一项的实现 → 先改本文档状态（「只列不做」→ 落地记录）；新增入站端点后，guardrails/security-boundaries 必须同步补信任边界。

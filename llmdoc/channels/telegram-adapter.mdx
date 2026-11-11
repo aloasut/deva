@@ -1,0 +1,81 @@
+---
+description: "Telegram 适配器完整契约：getUpdates 长轮询（无 webhook）、收消息过滤、sendMessage/editMessageText 原地更新、内联键盘与 callback_query、按钮 value 编码（j/p 前缀 64 字节）、4096 字符上限与 pageChars/minUpdateMs 取值、429/409/401 处置"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/main/services/remote/telegram.ts
+    - apps/desktop/src/main/services/remote/telegram-onboard.ts
+relations:
+  related:
+    - channels/remote-contract.mdx
+    - channels/remote-lifecycle.mdx
+---
+
+# Telegram 适配器契约（telegram.ts）
+
+`TelegramAdapter implements RemoteAdapter`，构造 `new TelegramAdapter(id: ChannelId, opts: TelegramOptions)`，`TelegramOptions` = `{ token: string }`。只负责连平台 / 收消息 / 把 hub 视图渲染成 Telegram 消息，不碰会话、不鉴权、不解析指令（[分层](remote-channels.mdx)）。请求一律走 `net.fetch`（Chromium 网络栈，自动用系统代理）。
+
+## 常量与取值（全部源码实测）
+
+| 名 | 值 | 处 |
+|---|---|---|
+| `minUpdateMs` | `1200`（编辑 1 次/秒左右安全，再快触发 429） | telegram.ts:172 |
+| `pageChars` | `3000`（4096 上限扣除 Markdown→HTML 膨胀的余量） | telegram.ts:174 |
+| `MAX_TEXT` | `4096`（单条消息字符上限，按含 HTML 标签保守估计） | telegram.ts:33 |
+| `STALE_MS` | `5 * 60_000`（超龄消息直接丢弃） | telegram.ts:31 |
+| getUpdates `timeout` 参数 | `50` 秒；HTTP 超时 `65_000` ms | telegram.ts:215-219 |
+| `tgCall` 默认超时 | `20_000` ms（`AbortSignal.timeout`） | telegram.ts:62 |
+
+`TelegramError extends Error`，字段 `code: number`、`retryAfter?: number`（来自响应 `parameters.retry_after`）。`tgCall(token, method, params, opts)` 封装 Bot API 调用，**报错信息绝不含 URL（里面有 Token）**。
+
+## 收：getUpdates 长轮询（无 webhook，无需公网 IP）
+
+`start(host)` 流程：`onState('connecting')` → `fetchTelegramMe(token)`（getMe 校验 Token，401/404 给人话「Token 不正确…」）→ `deleteWebhook` 参数 `{ drop_pending_updates: false }`（设过 webhook 的机器人收不到 getUpdates，先清）→ `setMyCommands`（`BOT_COMMANDS`：new/list/stop/status/help 五条菜单，失败忽略）→ `onState('connected')` → `poll`。
+
+`poll` 每轮 `getUpdates` 参数 `{ offset, timeout: 50, allowed_updates: ['message', 'callback_query'] }`——API 层只订这两种更新；`offset = u.update_id + 1` 在**取回后立即**推进。正常返回但上次不健康时补发 `onState('connected')`。
+
+**消息过滤**（`onMessage`，任一不满足即丢弃）：
+1. `m.chat.type === 'private'` — 只认私聊（群里任何人都能发消息，而每条消息都能驱动电脑）。
+2. `m.from` 存在且 `!m.from.is_bot`。
+3. 未过期：`Date.now() - m.date * 1000 <= STALE_MS`（断线重连补收的旧指令可能早已不合时宜）。
+4. `m.text === undefined`（图片等，带说明也算）→ `kind: 'unsupported'`、text 空串。
+5. `stripMention`：`/cmd@本机器人` → `/cmd`（命令菜单点选会带 @）。
+
+**callback_query**（`onCallback`）：须有 `q.message`、`chat.type === 'private'`、`q.data`，否则 `answerCallbackQuery` 回「无法识别的操作」；处理完必答 `answerCallbackQuery`（`text.slice(0, 190)`，失败时 `show_alert: true`）。`decode` 查不到（Deva 重启过、内存表丢了）→ alert「按钮已失效，请重新操作（Deva 重启过）。」。
+
+## 按钮 value 编码（callback_data 64 字节上限）
+
+`encode(pending)`（`Pending` = `{ t: 'act'; value: ActionValue; form? } | { t: 'pick'; key; q; o } | { t: 'submit'; key }` 三形）：
+- `act` 且无 form：`'j' + JSON.stringify(value)`，`Buffer.byteLength ≤ 64` 才直接用——**重启后按钮仍有效**（名片 autotask/agent 的 ActionValue 正是为此设计成带 `sid + toolUseId`，草稿从会话历史 `toolInput` 取）。
+- 放不下（或带 form 的问答即时提交、pick/submit）：`'p' + (++seq).toString(36)`，实体存内存 `pending` Map；`pending.size > 3000` 时按插入序删最老 500 条。
+- `decode`：`p` 前缀查表；`j` 前缀 `JSON.parse` 并校验 `typeof value.k === 'string'`。
+
+## 问答卡（Telegram 无表单的替代交互）
+
+- 单题单选：点选项**即时提交**（`{ t: 'act', value: { k: 'ask', key }, form: { q0: label } }`）。
+- 多选 / 多题：点选项勾选（再点取消，`{ t: 'pick', key, q, o }`），勾选状态存内存 `drafts` Map（按 `view.key`），最后点「提交」（`{ t: 'submit', key }` → form `{ qN: [labels…] }`）；卡片 state 离开 open 即 `drafts.delete`。
+- 单题也可直接回复一条文字当答案（hub `sendToSession` 接管，见[生命周期](remote-lifecycle.mdx)）。
+
+## 发：sendMessage / editMessageText 原地更新
+
+统一走私有 `upsert(chat, rendered, handle?)`：有 `handle` → `editMessageText`（原地更新实现流式效果），无 → `sendMessage`。
+- 正文优先 `parse_mode: 'HTML'`（`mdToHtml` 把模型 Markdown 转成 Telegram HTML 子集：标题→`<b>`、列表→`•`、引用→`<blockquote>`、代码块→`<pre><code class="language-*">`、`**`/`__`→粗体、`*`→斜体、`~~`→`<s>`、链接→`<a>`；`esc` 只转义 `& < >`）；`html.length > MAX_TEXT` 直接走纯文本 `clipPlain`（截断补「…（内容较长，完整内容请在电脑端查看）」）。
+- HTML 被 400 拒（`/parse entities|can't find end/i`，模型输出的嵌套不规整）→ 退纯文本重试一次；`message is not modified` → 视为成功原样返回 handle。
+- 一律 `link_preview_options: { is_disabled: true }`；`sendMessage` 仅在键盘非空时带 `reply_markup`，`editMessageText` 总带（终态空键盘 = 清掉按钮）。
+- 视图渲染：回合卡标题 `personaName · sessionTitle`（非首页加「（续 N）」）；非末页无状态无键盘；末页状态行（运行中用 `statusText`，终态用 `STATUS` 映射 + `用时 {elapsedSec}s`）+ 未终态时一排「⏹ 停止」按钮（`{ k: 'stop', turn: turnId }`）。折叠长文用 `<blockquote expandable>`；plan 卡开态 clip 3000 / 决议态 clip 2500，autotask/agent 的 prompt clip 2000，notice clip 3000。
+- `openDirect(userId, view)`：Telegram 私聊 chat_id 就是用户 id，直接发通知并返回 `userId`；**对方须先点过 Start**，否则机器人无法主动发消息。`deleteMessage` 调 `deleteMessage`（`Number(handle)`；私聊里可删 48 小时内的用户消息）。
+
+## 错误处置（poll 循环内）
+
+| 情形 | 行为 |
+|---|---|
+| 401 / 404（Token 失效） | `onState('error', 'Token 已失效（可能在 @BotFather 里重置过），请删除后重新添加。')` 并**退出轮询**（不再重试） |
+| 409 Conflict（同 token 多处 getUpdates 互斥） | `onState('error', '这个机器人正被其他程序占用（例如另一台电脑上的 Deva），正在重试…')`，等 `15_000` ms 继续轮询 |
+| 429（限流） | 等 `retryAfter * 1000` ms（响应 `parameters.retry_after`），`onState('connecting')` |
+| 其他错误 | 指数退避：`backoff` 自 `1000` 起 ×2、封顶 `30_000`；成功一轮即复位 `1000` 并恢复 connected |
+
+无公网 IP 不是障碍：长轮询是纯出站，只要 Deva 所在机器能出站访问 `api.telegram.org` 即可（net.fetch 走系统代理）；配对认领（[telegram-onboard](remote-lifecycle.mdx)）同样是出站长轮询。
+
+## 变更后果
+
+动 `encode`/`decode` → 老聊天里已发出的按钮会失效，确认 64 字节直接编码路径仍覆盖全部名片动作；动退避/互斥参数 → 保持 409 的「不退出、提示占用方」语义（同 token 只能一处收消息）。
