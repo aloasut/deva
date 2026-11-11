@@ -901,6 +901,21 @@ export type BotScanEvent =
   | { scanId: string; status: 'denied' | 'expired' | 'cancelled' }
   | { scanId: string; status: 'error'; error: string }
 
+/** 安卓客户端入站通道（channel-server），与 services/channel-server/index.ts 的 AndroidServerView 对齐。 */
+export interface AndroidDevice {
+  id: string
+  name: string
+  pairedAt: number
+}
+export interface AndroidServerView {
+  enabled: boolean
+  host: string
+  port: number
+  state: 'off' | 'connecting' | 'connected' | 'error'
+  error?: string
+  devices: AndroidDevice[]
+}
+
 export interface ChatEventPayload {
   turnId: string
   sessionId: string
@@ -1488,6 +1503,18 @@ const api = {
       ipcRenderer.on('remote:scan', listener)
       return () => ipcRenderer.removeListener('remote:scan', listener)
     }
+  },
+  /** 安卓客户端入站通道（局域网 HTTP + SSE）。token 只写不读（secrets.json 加密，键 android:<deviceId>:token）。 */
+  android: {
+    getState: (): Promise<AndroidServerView> => ipcRenderer.invoke('android:get-state'),
+    /** 生成一次性配对码（5 分钟有效）与二维码（内容 deva://pair?host=…&port=…&code=…）。 */
+    pairCode: (): Promise<
+      | { ok: true; code: string; expiresAt: number; qr: string; host: string; port: number }
+      | { ok: false; error: string }
+    > => ipcRenderer.invoke('android:pair-code'),
+    pairCancel: (): Promise<{ ok: true }> => ipcRenderer.invoke('android:pair-cancel'),
+    /** 吊销已配对设备（删配置与密钥，此后其请求一律 401）。 */
+    removeDevice: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('android:remove-device', id)
   }
 }
 
