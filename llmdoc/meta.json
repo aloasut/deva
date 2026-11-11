@@ -48,7 +48,7 @@
       "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "channels/remote-channels.mdx": {
-      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
+      "validatedRevision": "301f3f34c8fa4202a08e6389e9f725ed049b6718"
     },
     "ux/renderer-architecture.mdx": {
       "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
@@ -63,16 +63,16 @@
       "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "channels/remote-contract.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "301f3f34c8fa4202a08e6389e9f725ed049b6718"
     },
     "channels/telegram-adapter.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "301f3f34c8fa4202a08e6389e9f725ed049b6718"
     },
     "channels/remote-lifecycle.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "301f3f34c8fa4202a08e6389e9f725ed049b6718"
     },
     "channels/android-client-prereqs.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "301f3f34c8fa4202a08e6389e9f725ed049b6718"
     }
   },
   "convergence": {
