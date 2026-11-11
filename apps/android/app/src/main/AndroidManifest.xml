@@ -1,12 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 局域网直连 Deva 桌面端（HTTP + SSE；明文传输是 v1 已知边界，设计 §7） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".DevaApp"
         android:allowBackup="true"
         android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Deva">
+        android:theme="@style/Theme.Deva"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"

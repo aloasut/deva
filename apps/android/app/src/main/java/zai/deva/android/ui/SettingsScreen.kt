@@ -1,12 +1,322 @@
 package zai.deva.android.ui
 
+import android.os.Build
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
+import zai.deva.android.AppGraph
+import zai.deva.android.core.ApiResult
+import zai.deva.android.core.ServerConfig
 
 /**
- * 服务器管理、配对、连接状态、明文提示（设计 §5-6）。
- * 明文 LAN 传输提示是安全要求（设计 §7）：设置页与配对成功页都要显式提示。
+ * 设置页（设计 §5-6 / P2 范围）：服务器增删与切换、配对（配对码 + 设备名）、连接测试、
+ * 明文传输提示（安全要求，设计 §7——设置页与配对成功提示都要显式出现）。
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen() {
-    // TODO(P4/P5): 设置页
+fun SettingsScreen(onBack: () -> Unit) {
+    val servers by AppGraph.servers.servers.collectAsState()
+    val currentId by AppGraph.servers.currentId.collectAsState()
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var showAdd by remember { mutableStateOf(false) }
+    var deleting by remember { mutableStateOf<ServerConfig?>(null) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("设置") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                }
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbar) }
+    ) { pad ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(pad),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "服务器",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { showAdd = true }) {
+                        Icon(Icons.Default.Add, contentDescription = null)
+                        Spacer(Modifier.width(4.dp))
+                        Text("添加")
+                    }
+                }
+            }
+
+            items(servers, key = { it.id }) { srv ->
+                ElevatedCard(
+                    onClick = { AppGraph.servers.setCurrent(srv.id) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = srv.id == currentId, onClick = { AppGraph.servers.setCurrent(srv.id) })
+                        Column(Modifier.weight(1f)) {
+                            Text(srv.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                "${srv.host}:${srv.port}" +
+                                    if (srv.deviceId.isEmpty()) " · 未配对" else " · 已配对（${srv.deviceId}）",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = { deleting = srv }) {
+                            Icon(Icons.Default.Delete, contentDescription = "删除")
+                        }
+                    }
+                }
+            }
+            if (servers.isEmpty()) {
+                item {
+                    Text(
+                        "还没有服务器。点右上「添加」，填电脑端显示的地址与端口。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // 配对面板：针对当前选中的服务器
+            item {
+                val cur = servers.firstOrNull { it.id == currentId }
+                if (cur != null) {
+                    PairPanel(server = cur, snackbar = snackbar, scope = scope)
+                }
+            }
+
+            // 明文传输提示（安全要求，不能省）
+            item {
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.elevatedCardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Text(
+                        "⚠ 明文传输提示：当前客户端与 Deva 桌面端之间使用局域网 HTTP 明文传输，" +
+                            "同网段内可被嗅探。请仅在可信网络（家庭 / 自己的路由器）下使用，" +
+                            "不要在公共 Wi-Fi 下配对或发送敏感内容。",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+            }
+        }
+    }
+
+    if (showAdd) {
+        AddServerDialog(
+            onDismiss = { showAdd = false },
+            onAdd = { name, host, port ->
+                AppGraph.servers.add(name, host, port)
+                showAdd = false
+            }
+        )
+    }
+
+    deleting?.let { srv ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("删除服务器") },
+            text = { Text("删除「${srv.name}」（${srv.host}:${srv.port}）？已保存的配对凭据也会一并清除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    srv.deviceId.takeIf { it.isNotEmpty() }?.let { AppGraph.secure.removeToken(it) }
+                    AppGraph.servers.remove(srv.id)
+                    deleting = null
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } }
+        )
+    }
+}
+
+@Composable
+private fun PairPanel(
+    server: ServerConfig,
+    snackbar: SnackbarHostState,
+    scope: kotlinx.coroutines.CoroutineScope
+) {
+    var deviceName by remember { mutableStateOf(defaultDeviceName()) }
+    var code by remember { mutableStateOf("") }
+    var pairing by remember { mutableStateOf(false) }
+    var infoText by remember { mutableStateOf("") }
+
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("配对：${server.name}", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "在电脑端 Deva「设置 → 远程设备」开启安卓通道、点「生成配对码」，把 6 位码填到下面（5 分钟内有效）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = deviceName,
+                onValueChange = { deviceName = it },
+                label = { Text("设备名（电脑端显示）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            OutlinedTextField(
+                value = code,
+                onValueChange = { code = it.filter { c -> c.isDigit() }.take(6) },
+                label = { Text("6 位配对码") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(
+                    enabled = !pairing && code.length == 6 && server.id == AppGraph.servers.currentId.value,
+                    onClick = {
+                        val srv = AppGraph.current.value ?: return@TextButton
+                        // 配对接口免鉴权，但地址必须是当前选中的这台服务器
+                        val client = AppGraph.client() ?: return@TextButton
+                        pairing = true
+                        scope.launch {
+                            when (val r = client.pair(code, deviceName)) {
+                                is ApiResult.Ok -> {
+                                    AppGraph.secure.saveToken(r.value.deviceId, r.value.token)
+                                    AppGraph.servers.updateDevice(srv.id, r.value.deviceId)
+                                    snackbar.showSnackbar(
+                                        "配对成功。⚠ 当前为局域网明文传输，请仅在可信网络使用。"
+                                    )
+                                }
+                                is ApiResult.Err -> snackbar.showSnackbar(r.message)
+                            }
+                            pairing = false
+                        }
+                    }
+                ) { Text(if (pairing) "配对中…" else if (server.deviceId.isEmpty()) "配对" else "重新配对") }
+
+                Spacer(Modifier.width(12.dp))
+
+                TextButton(
+                    onClick = {
+                        val client = AppGraph.client() ?: return@TextButton
+                        scope.launch {
+                            when (val r = client.info()) {
+                                is ApiResult.Ok -> infoText =
+                                    "已连接：${r.value.hostname} · v${r.value.version} · ${r.value.platform}"
+                                is ApiResult.Err -> infoText = r.message
+                            }
+                        }
+                    }
+                ) { Text("测试连接") }
+            }
+            if (infoText.isNotEmpty()) {
+                Text(
+                    infoText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddServerDialog(onDismiss: () -> Unit, onAdd: (name: String, host: String, port: Int) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var host by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("4317") }
+    val portOk = port.toIntOrNull() in 1..65535
+    val hostOk = host.trim().isNotEmpty()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加服务器") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("名称（可选）") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = { Text("主机（IP 或主机名）") },
+                    singleLine = true,
+                    isError = host.isNotEmpty() && !hostOk
+                )
+                OutlinedTextField(
+                    value = port,
+                    onValueChange = { port = it.filter { c -> c.isDigit() }.take(5) },
+                    label = { Text("端口（默认 4317）") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    isError = !portOk
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = hostOk && portOk, onClick = { onAdd(name, host.trim(), port.toInt()) }) {
+                Text("添加")
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+private fun defaultDeviceName(): String {
+    val manufacturer = Build.MANUFACTURER?.replace(Regex("\\s+"), "-") ?: "Android"
+    val model = Build.MODEL?.replace(Regex("\\s+"), "-") ?: "device"
+    return if (model.startsWith(manufacturer)) model.take(40) else "$manufacturer-$model".take(40)
 }
