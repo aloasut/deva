@@ -3,8 +3,12 @@ import { hostname } from 'node:os'
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { app } from 'electron'
 import { getChatRuntime } from '../chat'
-import { listSessions } from '../chat-store'
+import { ensureSession, getSession, listSessions, save as saveProject } from '../chat-store'
+import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from '../model-resolve'
+import { getPersona } from '../personas'
 import { setSecret } from '../secrets'
+import type { Message } from '../../providers/types'
+import { isEffortLevel } from '../../../shared/effort'
 import type { ChannelState } from '../remote/types'
 import { deviceIdForToken, invalidateTokenCache } from './auth'
 import { addDevice, type AndroidServerConfig } from './config'
@@ -57,6 +61,54 @@ function readJson<T>(req: IncomingMessage, limit = 64 * 1024): Promise<T | null>
 
 function genDeviceId(): string {
   return `dev_${Date.now().toString(36)}_${randomInt(0, 36 ** 4).toString(36)}`
+}
+
+/** 回填给手机端的展示条目（不含工具输出/思考等模型上下文细节，见 projectMessages）。 */
+interface BackfillItem {
+  i: number
+  role: 'user' | 'assistant'
+  text?: string
+  /** 工具调用名列表（assistant 消息；手机端折叠成一行「正在…」）。 */
+  tools?: string[]
+  /** 图片 / 文档附件个数（正文之外的内容块）。 */
+  attachments?: number
+}
+
+/**
+ * 把主进程的 Message[]（模型上下文真源）投影成手机端可显示的线性列表：
+ * 正文取 text 块；assistant 的 tool_use 折叠成工具名；user 消息里的 tool_result（provider 约定）
+ * 不是人话，跳过；图片/文档只报个数（v1 不回填正文附件）。i 为投影后序号，供分页定位。
+ */
+function projectMessages(messages: Message[]): BackfillItem[] {
+  const out: BackfillItem[] = []
+  for (const m of messages) {
+    const texts: string[] = []
+    const tools: string[] = []
+    let attachments = 0
+    if (typeof m.content === 'string') {
+      if (m.content.trim()) texts.push(m.content)
+    } else {
+      for (const p of m.content) {
+        if (p.type === 'text') {
+          if (p.text.trim()) texts.push(p.text)
+        } else if (p.type === 'tool_use') {
+          tools.push(p.name)
+        } else if (p.type === 'image' || p.type === 'document') {
+          attachments++
+        }
+        // tool_result：工具输出，桌面端折叠展示，v1 手机端不回填
+      }
+    }
+    if (texts.length || tools.length || attachments)
+      out.push({
+        i: out.length,
+        role: m.role,
+        ...(texts.length ? { text: texts.join('\n\n') } : {}),
+        ...(tools.length ? { tools } : {}),
+        ...(attachments ? { attachments } : {})
+      })
+  }
+  return out
 }
 
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -119,6 +171,87 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
             archived: s.archived === true
           }))
       })
+    }
+
+    // POST /api/sessions：新建空会话（可选 name 仅作提示——标题仍由桌面端 deriveTitle 首发时生成）。
+    // 转发 chat-store 既有函数（ensureSession + saveProject，与 chat:create-session 同源），不新增语义。
+    if (method === 'POST' && url.pathname === '/api/sessions') {
+      const id = `sess_${Date.now().toString(36)}_${randomInt(0, 36 ** 4).toString(36)}`
+      ensureSession(id)
+      saveProject(id)
+      return json(res, 200, { id })
+    }
+
+    // POST /api/sessions/:id/send：发消息（转调 chatRuntime.send，设计 §3.3——与桌面 IPC 同一入口）。
+    // 模型解析照抄 hub 的链：请求显式 modelRef → 会话已存 → 角色偏好 → 全局默认（ChatSendRequest.model
+    // 必填，入站通道必须自己解析出一个，不能把空值传进去）。
+    const mSend = url.pathname.match(/^\/api\/sessions\/([^/]+)\/send$/)
+    if (mSend && method === 'POST') {
+      const rt = getChatRuntime()
+      if (!rt) return json(res, 503, { error: 'Deva 还没准备好，请稍后再试。' })
+      const sid = decodeURIComponent(mSend[1])
+      const body = await readJson<{
+        text?: unknown
+        attachments?: unknown
+        modelRef?: unknown
+        effort?: unknown
+      }>(req)
+      const text = typeof body?.text === 'string' ? body.text.trim() : ''
+      if (!text) return json(res, 400, { error: '缺少消息正文。' })
+      const session = getSession(sid)
+      if (!session) return json(res, 404, { error: '会话不存在。' })
+      const persona = session.personaId ? getPersona(session.personaId) : null
+      const explicitRef = typeof body?.modelRef === 'string' && body.modelRef ? body.modelRef : null
+      const model =
+        (explicitRef ? resolveModelRefOrNull(explicitRef) : null) ??
+        resolveModelRefOrNull(session.model) ??
+        resolveModelRefOrNull(persona?.model) ??
+        resolveDefaultModel()
+      if (!model) return json(res, 400, { error: '还没有可用的模型，请先在电脑端的设置里配置并选定模型。' })
+      const attachments = Array.isArray(body?.attachments)
+        ? body.attachments.filter((a): a is string => typeof a === 'string' && a.length > 0)
+        : undefined
+      try {
+        const { turnId } = await rt.send({
+          sessionId: sid,
+          text,
+          model,
+          workspaceRoot: null,
+          ...(attachments?.length ? { attachments } : {}),
+          // 与桌面/hub 同：记下这一轮实际生效的模型与思考等级，此后本对话固定用它们
+          modelRef: explicitRef ?? `${model.providerId}:${model.model}`,
+          effort: isEffortLevel(body?.effort) ? body.effort : (session.effort ?? resolveDefaultEffort())
+        })
+        return json(res, 200, { turnId })
+      } catch (e) {
+        // busy 等业务错误从 chatRuntime 抛出：409 原样带文案回给手机端，不吞
+        return json(res, 409, { error: errText(e) })
+      }
+    }
+
+    // POST /api/turns/:turnId/abort：停止回合（转调 chatRuntime.abort；未知 turnId 为 no-op，照常 ok）
+    const mAbort = url.pathname.match(/^\/api\/turns\/([A-Za-z0-9_-]+)\/abort$/)
+    if (mAbort && method === 'POST') {
+      const rt = getChatRuntime()
+      if (!rt) return json(res, 503, { error: 'Deva 还没准备好，请稍后再试。' })
+      rt.abort(mAbort[1])
+      return json(res, 200, { ok: true })
+    }
+
+    // GET /api/sessions/:id/messages：历史回填（投影展示条目；?start=&limit= 向后翻页，默认返回最新一段）
+    const mMsg = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages$/)
+    if (mMsg && method === 'GET') {
+      const session = getSession(decodeURIComponent(mMsg[1]))
+      if (!session) return json(res, 404, { error: '会话不存在。' })
+      const items = projectMessages(session.messages)
+      const total = items.length
+      const qLimit = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
+      const limit = Number.isFinite(qLimit) ? Math.min(Math.max(qLimit, 1), 2000) : 400
+      const qStart = Number.parseInt(url.searchParams.get('start') ?? '', 10)
+      const start = Number.isFinite(qStart)
+        ? Math.min(Math.max(qStart, 0), Math.max(total - 1, 0))
+        : Math.max(total - limit, 0)
+      return json(res, 200, { sessionId: session.id, total, start, messages: items.slice(start, start + limit) })
     }
 
     // GET /api/turns/:turnId/events：SSE（长连接，此处不写 JSON 结尾）
