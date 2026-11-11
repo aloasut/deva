@@ -1,66 +1,66 @@
 {
   "schema": "llmdoc.meta/v3",
   "baseline": {
-    "revision": "65236c40cd3a0683c6acb57e1fcaa4b2f51b24b9",
-    "verifiedAt": "2026-11-11T15:03:06Z"
+    "revision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e",
+    "verifiedAt": "2026-11-11T15:16:49.200Z"
   },
   "documents": {
     "runtime/process-model.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "runtime/ipc-contract.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "chat-engine/agent-loop.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "chat-engine/context-management.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "guardrails/tools-policy.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "guardrails/security-boundaries.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "extensions/skills.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "extensions/mcp.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "roles/role-semantics.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "roles/members.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "roles/scheduled-tasks.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "persistence/storage-layout.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "persistence/checkpoints-rewind.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "channels/browser.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "channels/remote-channels.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "ux/renderer-architecture.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "ux/input-contracts.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "ux/deliverables-media.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     },
     "release/release-and-update.mdx": {
-      "validatedRevision": null
+      "validatedRevision": "b4a728efc3ef55f71d4748d3fb72982c30afe52e"
     }
   },
   "convergence": {
