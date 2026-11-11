@@ -5,6 +5,7 @@ code:
   paths:
     - apps/desktop/src/main/services/remote/telegram.ts
     - apps/desktop/src/main/services/remote/telegram-onboard.ts
+    - apps/desktop/src/main/services/remote/feishu.ts
 relations:
   related:
     - channels/remote-contract.mdx
@@ -64,6 +65,21 @@ relations:
 - 一律 `link_preview_options: { is_disabled: true }`；`sendMessage` 仅在键盘非空时带 `reply_markup`，`editMessageText` 总带（终态空键盘 = 清掉按钮）。
 - 视图渲染：回合卡标题 `personaName · sessionTitle`（非首页加「（续 N）」）；非末页无状态无键盘；末页状态行（运行中用 `statusText`，终态用 `STATUS` 映射 + `用时 {elapsedSec}s`）+ 未终态时一排「⏹ 停止」按钮（`{ k: 'stop', turn: turnId }`）。折叠长文用 `<blockquote expandable>`；plan 卡开态 clip 3000 / 决议态 clip 2500，autotask/agent 的 prompt clip 2000，notice clip 3000。
 - `openDirect(userId, view)`：Telegram 私聊 chat_id 就是用户 id，直接发通知并返回 `userId`；**对方须先点过 Start**，否则机器人无法主动发消息。`deleteMessage` 调 `deleteMessage`（`Number(handle)`；私聊里可删 48 小时内的用户消息）。
+
+## 与飞书适配器对照（feishu.ts，同契约的另一实现）
+
+| 维度 | Telegram | 飞书 FeishuAdapter |
+|---|---|---|
+| 传输 | `getUpdates` 长轮询（主动出站 HTTP） | lark `WSClient` WebSocket 长连接（`autoReconnect: true`，onReady/onReconnecting/onReconnected/onError 直映 `onState`），同样无需公网 IP |
+| `minUpdateMs` | `1200`（~1 次/秒安全） | `1000`（平台原地更新约 5 QPS，留余量） |
+| `pageChars` | `3000`（4096 字符上限扣 HTML 膨胀） | `6000`（卡片 JSON 上限 30KB 按 UTF-8 每汉字 3 字节换算） |
+| 原地更新 | `editMessageText` | `im.v1.message.patch`（消息卡片 JSON 2.0） |
+| 按钮 value | callback_data 64 字节 → `j`/`p` 编码 | **无长度压力**，ActionValue 直接 JSON 进卡片 `behaviors callback value`（永不受重启影响） |
+| 问答卡 | 无表单：选项点选 + 内存 drafts | 原生 form：`select_static`/`multi_select_static`（name `q{i}`）+ `input`（name `q{i}_text`）+ `form_action_type: 'submit'` |
+| 收消息过滤 | 私聊 + 非机器人 + `STALE_MS` + 去 @提及（正则） | `chat_type === 'p2p'` + `sender_type === 'user'` + 同一个 `STALE_MS = 5 * 60_000` + `extractText`（text/post 富文本取纯文本，`/@_user_\d+/g` 去 @）+ `dedupe`（message_id 去重，seen 上限 500） |
+| 删消息 | 可删私聊双方（用户消息限 48h） | 只能撤回**机器人自己**的消息（故飞书 InboundMessage 不带 messageId，Trail 不记用户那条） |
+| `openDirect` 返回 | 直接返回 `userId`（私聊 chatId 即用户 id） | 发一条卡片后返回 `r.data?.chat_id` |
+| 长文折叠 | `<blockquote expandable>` | `collapsible_panel` |
 
 ## 错误处置（poll 循环内）
 

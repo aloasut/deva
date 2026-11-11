@@ -7,6 +7,7 @@ code:
     - apps/desktop/src/main/services/remote/hub.ts
     - apps/desktop/src/main/services/remote/store.ts
     - apps/desktop/src/main/services/remote/telegram-onboard.ts
+    - apps/desktop/src/main/services/remote/feishu-onboard.ts
     - apps/desktop/src/renderer/src/redesign/BotsPane.tsx
 relations:
   related:
@@ -23,7 +24,7 @@ relations:
 
 入口 IPC `remote:scan-start`（platform, opts?`{ token? }`）→ 返回 `{ ok: true, scanId, qr（二维码 data URL，QRCode.toDataURL(scan.url, { margin: 1, width: 360 })）, link?, userCode?, expiresAt }`；结果经事件 `remote:scan`（`ScanEvent`：`done{botId}` / `denied` / `expired` / `cancelled` / `error{error}`）推回。成功后主进程 `addBot`（`enabled: true`、`replyMode: 'stream'`、`scope: DEFAULT_SCOPE`）并存密钥、立即 `launch`。
 
-- **飞书**：扫码即在平台上创建应用拿凭据（feishuScan → startFeishuScan），扫码人 openId 直接进 `users`（chatId 先空串，连上后打招呼补）。
+- **飞书**：扫码即在平台上创建应用拿凭据（feishuScan → startFeishuScan：`lark.registerApp` OAuth 2.0 设备授权 RFC 8628，`createOnly: true` 防误选已有应用，domain 按 `tenant_brand` 判 feishu/lark；`ScanOutcome` = done`{appId, appSecret, openId?, domain}` / denied / expired / cancelled / error，永不 reject），扫码人 openId 直接进 `users`（chatId 先空串，连上后打招呼补）。
 - **Telegram**（两步，`telegramScan`）：
   1. 贴 Token：格式校验 `/^\d+:[\w-]{20,}$/`，`fetchTelegramMe`（getMe）验证，按 `settings.botId === me.id` 查重（同机器人只能一处收消息）。
   2. 扫码认领（`telegram-onboard.ts` `startTelegramLink(token, me)`）：二维码内容 `https://t.me/<me.username>?start=<code>`，`code = randomBytes(9).toString('base64url')`（72 位随机，`LINK_TTL_MS = 10 * 60_000`）；手机扫码打开机器人点 Start，客户端发出 `/start <code>`（正则 `^/start(?:@<username>)?\s+<code>$`，i）。认领期间独立长轮询 `getUpdates`（`allowed_updates: ['message']`，单次 timeout 取剩余秒数封顶 25，HTTP 超时 `(left + 15) * 1000`；409 直接报「被其他程序占用，请先停掉那边」；命中后补一次 `getUpdates { offset, timeout: 0 }` 确认掉已收更新）。返回 `TelegramLink { url, expiresAt, outcome: Promise<LinkOutcome>, cancel() }`，`LinkOutcome` = done`{userId, userName?}` / expired / cancelled / error`{message}`，永不 reject。

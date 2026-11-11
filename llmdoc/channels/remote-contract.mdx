@@ -28,7 +28,7 @@ relations:
 ## 入站（适配器 → hub）
 
 - `InboundMessage` = `{ chat: ChatAddress; user: RemoteUser; text: string; kind: 'text' | 'unsupported'; messageId?: MessageHandle }`。`text` 是纯文本（适配器已去 @ 提及）；非文本消息为空串 + `kind: 'unsupported'`。`messageId` 供 hub 删指令消息（飞书不允许删用户消息时留空）。
-- `InboundAction` = `{ chat: ChatAddress; user: RemoteUser; value: ActionValue; messageId?: MessageHandle; form?: Record<string, string | string[]> }`：按钮回传动作（适配器把平台回调解成此形状）；`form` 仅问答卡提交时有（字段名 → 文本或多选数组）。
+- `InboundAction` = `{ chat: ChatAddress; user: RemoteUser; value: ActionValue; messageId?: MessageHandle; form?: Record<string, string | string[]> }`：按钮回传动作（适配器把平台回调解成此形状）；`form` 仅问答卡提交时有（字段名 → 文本或多选数组）。**字段名约定 `q{i}`（选择）与 `q{i}_text`（自填文本）**：hub `handleAction` 按此消费；飞书用它作原生表单组件 name，Telegram 模拟表单（选项点选）也生成同名——改任一侧须三方同步。
 - `ActionValue`（按钮 value 由 hub 生成、适配器原样塞进按钮并原样还回）8 个变体，判别字段 `k`：
   - `{ k: 'ask'; key: string }` — 问答卡提交（key = 交互卡 key）。
   - `{ k: 'plan'; key: string; d: 'approve' | 'keep' | 'ignore' }` — 计划审阅决议。
