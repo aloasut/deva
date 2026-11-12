@@ -752,16 +752,17 @@ const zhCN: MessageTree = {
       feishu: '删除后机器人将断开连接，手机上无法再使用。飞书开放平台上的应用不会被删除，可自行在开放平台删除。',
       telegram: '删除后机器人将断开连接，手机上无法再使用。Telegram 上的机器人不会被删除，可在 @BotFather 里用 /deletebot 删除。'
     },
-    android: {
-      title: '安卓设备',
-      hint: '在安卓手机上直连这台电脑的 Deva：同一后端、同一会话。配对后在手机上看会话、发消息、作答交互卡、收交付文件。',
+    general: {
+      title: '通用设备',
+      hint: '在手机 / 平板等设备上用配套 App 直连这台电脑的 Deva：同一后端、同一会话。配对后可在设备上看会话、发消息、作答交互卡、收交付文件。',
       pair: '生成配对码',
       pairHint: '在安卓 App「设置 → 添加服务器」里填下面的地址与 6 位配对码。',
       pairExpires: '{s} 后过期',
       pairRegen: '重新生成',
       pairCancel: '作废',
+      addMenu: '通用设备（生成配对码）',
       devices: '已配对设备',
-      devicesEmpty: '还没有已配对的安卓设备，点上方「生成配对码」添加。',
+      devicesEmpty: '还没有已配对的设备，点上方「生成配对码」添加。',
       revoke: '吊销',
       revokeConfirm: '吊销「{name}」？该设备保存的凭据将一并清除，之后它的请求一律被拒绝。',
       listen: '监听 {host}:{port}',
@@ -2210,16 +2211,17 @@ const en: MessageTree = {
       telegram:
         'The bot will be disconnected and stop working on your phone. The bot itself is not deleted from Telegram; use /deletebot with @BotFather to remove it.'
     },
-    android: {
-      title: 'Android devices',
-      hint: 'Connect Deva on an Android phone directly to this computer: same backend, same chats. After pairing you can browse chats, send messages, answer cards and receive delivered files on the phone.',
+    general: {
+      title: 'General devices',
+      hint: 'Connect a device running the Deva companion app directly to this computer: same backend, same chats. After pairing you can browse chats, send messages, answer cards and receive delivered files on it.',
       pair: 'Generate pairing code',
       pairHint: 'Enter this address and the 6-digit code in the Android app under Settings → Add server.',
       pairExpires: 'Expires in {s}',
       pairRegen: 'Regenerate',
       pairCancel: 'Discard',
+      addMenu: 'General device (generate pairing code)',
       devices: 'Paired devices',
-      devicesEmpty: 'No paired Android devices yet. Tap "Generate pairing code" above to add one.',
+      devicesEmpty: 'No paired devices yet. Tap "Generate pairing code" above to add one.',
       revoke: 'Revoke',
       revokeConfirm: 'Revoke "{name}"? Its stored credentials will be removed and all further requests from it will be rejected.',
       listen: 'Listening on {host}:{port}',

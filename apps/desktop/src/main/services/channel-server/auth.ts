@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import { getSecret } from '../secrets'
-import { getAndroidServerConfig } from './config'
+import { getGeneralServerConfig } from './config'
 
 /**
  * Bearer token → deviceId 的解析。token 明文的进程内缓存（secrets.json 里是 safeStorage 密文，
@@ -18,8 +18,8 @@ export async function deviceIdForToken(token: string): Promise<string | null> {
   if (!given.length) return null
   if (!cache) {
     cache = new Map()
-    for (const d of getAndroidServerConfig().devices) {
-      const t = await getSecret(`android:${d.id}:token`)
+    for (const d of getGeneralServerConfig().devices) {
+      const t = await getSecret(`general:${d.id}:token`)
       if (t) cache.set(t, d.id)
     }
   }

@@ -15,7 +15,7 @@ type BotView = RemoteState['bots'][number]
 type Platform = BotView['platform']
 type Scope = BotView['scope']
 type ScopeKind = Exclude<Scope['mode'], 'all'>
-type AndroidView = Awaited<ReturnType<typeof window.deva.android.getState>>
+type GeneralView = Awaited<ReturnType<typeof window.deva.general.getState>>
 
 /** 与主进程 hub 同口径：没绑定角色的旧对话算默认角色。 */
 const DEFAULT_PERSONA_ID = 'general'
@@ -37,12 +37,14 @@ export function BotsPane(): React.JSX.Element {
   const [viewId, setViewId] = useState<string | null>(null)
   const [adding, setAdding] = useState<Platform | null>(null)
   const [query, setQuery] = useState('')
-  const [android, setAndroid] = useState<AndroidView | null>(null)
+  const [general, setGeneral] = useState<GeneralView | null>(null)
+  // 「+」菜单选通用设备时的自动出码信号
+  const [generalPairTick, setGeneralPairTick] = useState(0)
 
-  // 安卓入站通道状态（channel-server）：5s 轮询，手机配对后列表角标与状态自动更新
+  // 通用设备通道状态（channel-server）：5s 轮询，手机配对后列表角标与状态自动更新
   useEffect(() => {
-    void window.deva.android.getState().then(setAndroid)
-    const id = window.setInterval(() => void window.deva.android.getState().then(setAndroid), 5000)
+    void window.deva.general.getState().then(setGeneral)
+    const id = window.setInterval(() => void window.deva.general.getState().then(setGeneral), 5000)
     return () => window.clearInterval(id)
   }, [])
 
@@ -62,8 +64,8 @@ export function BotsPane(): React.JSX.Element {
 
   // 默认选第一个；选中的被删除后同理回落。
   useEffect(() => {
-    // 'android' 是安卓通道详情的保留 viewId,不属于 bots 列表
-    if (viewId && (viewId === 'android' || bots.some((b) => b.id === viewId))) return
+    // 'general' 是通用设备通道详情的保留 viewId,不属于 bots 列表
+    if (viewId && (viewId === 'general' || bots.some((b) => b.id === viewId))) return
     setViewId(bots[0]?.id ?? null)
   }, [bots, viewId])
 
@@ -99,24 +101,27 @@ export function BotsPane(): React.JSX.Element {
               </button>
             )}
           </div>
-          <BotAddMenu onPick={setAdding} />
+          <BotAddMenu onPick={setAdding} onPickGeneral={() => {
+            setViewId('general')
+            setGeneralPairTick((n) => n + 1)
+          }} />
         </div>
         <div className="cf-list">
           <button
-            className={`cf-trow bots-row${viewId === 'android' ? ' is-active' : ''}`}
-            onClick={() => setViewId('android')}
+            className={`cf-trow bots-row${viewId === 'general' ? ' is-active' : ''}`}
+            onClick={() => setViewId('general')}
           >
             <span className="bots-logo">
               <Smartphone size={18} />
             </span>
             <div className="cf-trow__main">
-              <div className="cf-trow__title">{t('bots.android.title')}</div>
+              <div className="cf-trow__title">{t('bots.general.title')}</div>
               <div className="bots-row__meta">
-                <span className={`bots-dot bots-dot--${android?.state ?? 'off'}`} />
-                {t(`bots.state.${android?.state ?? 'off'}`)}
-                {android && (
+                <span className={`bots-dot bots-dot--${general?.state ?? 'off'}`} />
+                {t(`bots.state.${general?.state ?? 'off'}`)}
+                {general && (
                   <span className="bots-tag">
-                    {android.devices.filter((d) => d.online).length}/{android.devices.length}
+                    {general.devices.filter((d) => d.online).length}/{general.devices.length}
                   </span>
                 )}
               </div>
@@ -150,10 +155,10 @@ export function BotsPane(): React.JSX.Element {
 
       <main className="cf-conv">
         <div className="cf-dragbar" aria-hidden="true" />
-        {viewId === 'android' ? (
+        {viewId === 'general' ? (
           <div className="cf-profile">
             <div className="bots-detail">
-              <AndroidDetail />
+              <GeneralDetail pairRequest={generalPairTick} />
             </div>
           </div>
         ) : view ? (
@@ -187,7 +192,13 @@ export function BotsPane(): React.JSX.Element {
 }
 
 /** 「添加机器人」：悬停展开支持的平台（交互同角色 / 任务的 AddMenu），点击即开始添加。 */
-function BotAddMenu({ onPick }: { onPick: (p: Platform) => void }): React.JSX.Element {
+function BotAddMenu({
+  onPick,
+  onPickGeneral
+}: {
+  onPick: (p: Platform) => void
+  onPickGeneral: () => void
+}): React.JSX.Element {
   const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const closeTimer = useRef<number | null>(null)
@@ -225,6 +236,18 @@ function BotAddMenu({ onPick }: { onPick: (p: Platform) => void }): React.JSX.El
       </button>
       {open && (
         <div className="cf-addmenu__pop" role="menu">
+          <button
+            className="cf-addmenu__item bots-addmenu__item"
+            role="menuitem"
+            onClick={() => {
+              cancelClose()
+              setOpen(false)
+              onPickGeneral()
+            }}
+          >
+            <Smartphone size={14} />
+            {t('bots.general.addMenu')}
+          </button>
           {PLATFORMS.map((p) => (
             <button
               key={p.id}
@@ -852,18 +875,18 @@ function ScopePicker({
  * 安卓入站通道详情（设计 §3.2/§3.5 的桌面面）：状态 + 一次性配对码（二维码）+ 已配对设备。
  * 状态每 5s 轮询（配对码生成/作废/吊销后立即刷新）；通道启停挂在主进程生命周期，此处只读。
  */
-function AndroidDetail(): React.JSX.Element {
+function GeneralDetail({ pairRequest }: { pairRequest: number }): React.JSX.Element {
   const { t } = useI18n()
   const dialog = useDialog()
   const toast = useToast()
-  const [st, setSt] = useState<AndroidView | null>(null)
+  const [st, setSt] = useState<GeneralView | null>(null)
   const [pair, setPair] = useState<
-    Extract<Awaited<ReturnType<typeof window.deva.android.pairCode>>, { ok: true }> | null
+    Extract<Awaited<ReturnType<typeof window.deva.general.pairCode>>, { ok: true }> | null
   >(null)
   const [, setTick] = useState(0)
 
   const reload = useCallback((): void => {
-    void window.deva.android.getState().then(setSt)
+    void window.deva.general.getState().then(setSt)
   }, [])
 
   useEffect(() => {
@@ -878,13 +901,18 @@ function AndroidDetail(): React.JSX.Element {
     const id = window.setInterval(() => setTick((n) => n + 1), 1000)
     return () => window.clearInterval(id)
   }, [pair])
+  // 「+」菜单选通用设备:导航到此详情并自动出码
+  useEffect(() => {
+    if (pairRequest > 0) makeCode()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pairRequest])
   const left = pair ? Math.max(0, Math.ceil((pair.expiresAt - Date.now()) / 1000)) : 0
   useEffect(() => {
     if (pair && left <= 0) setPair(null)
   }, [pair, left])
 
   const makeCode = (): void => {
-    void window.deva.android.pairCode().then((r) => {
+    void window.deva.general.pairCode().then((r) => {
       if (r.ok) setPair(r)
       else toast.show({ variant: 'error', message: r.error || t('bots.failed') })
     })
@@ -892,13 +920,13 @@ function AndroidDetail(): React.JSX.Element {
 
   const revoke = async (id: string, name: string): Promise<void> => {
     const ok = await dialog.confirm({
-      title: t('bots.android.revoke'),
-      message: t('bots.android.revokeConfirm').replace('{name}', name || id),
-      confirmText: t('bots.android.revoke'),
+      title: t('bots.general.revoke'),
+      message: t('bots.general.revokeConfirm').replace('{name}', name || id),
+      confirmText: t('bots.general.revoke'),
       variant: 'danger'
     })
     if (!ok) return
-    await window.deva.android.removeDevice(id)
+    await window.deva.general.removeDevice(id)
     reload()
   }
 
@@ -911,14 +939,14 @@ function AndroidDetail(): React.JSX.Element {
           <Smartphone size={22} />
         </span>
         <div className="bots-detail__title">
-          <span className="bots-detail__name">{t('bots.android.title')}</span>
+          <span className="bots-detail__name">{t('bots.general.title')}</span>
           <span className={`bots-detail__state is-${state}`}>
             <span className={`bots-dot bots-dot--${state}`} />
             {t(`bots.state.${state}`)}
             {st && (
               <>
                 <span className="bots-detail__sep">·</span>
-                {t('bots.android.listen').replace('{host}', st.host).replace('{port}', String(st.port))}
+                {t('bots.general.listen').replace('{host}', st.host).replace('{port}', String(st.port))}
                 <span className="bots-detail__sep">·</span>
                 {st.devices.length}
               </>
@@ -929,14 +957,14 @@ function AndroidDetail(): React.JSX.Element {
       {st?.state === 'error' && st.error && <div className="mcp-error">{st.error}</div>}
 
       <div className="bots-card">
-        <p className="bots-card__hint">{t('bots.android.hint')}</p>
+        <p className="bots-card__hint">{t('bots.general.hint')}</p>
         <div className="bots-card__row">
           <div className="bots-card__label">
-            {t('bots.android.pair')}
-            <span className="bots-card__hint">{t('bots.android.pairHint')}</span>
+            {t('bots.general.pair')}
+            <span className="bots-card__hint">{t('bots.general.pairHint')}</span>
           </div>
           <button className="bots-btn" onClick={makeCode}>
-            {t('bots.android.pair')}
+            {t('bots.general.pair')}
           </button>
         </div>
         {pair && (
@@ -947,18 +975,18 @@ function AndroidDetail(): React.JSX.Element {
               <span className="bots-card__hint">
                 {pair.host}:{pair.port}
               </span>
-              <span className="bots-card__hint">{t('bots.android.pairExpires').replace('{s}', fmtLeft(left))}</span>
+              <span className="bots-card__hint">{t('bots.general.pairExpires').replace('{s}', fmtLeft(left))}</span>
               <button className="ext-linkbtn" onClick={makeCode}>
-                {t('bots.android.pairRegen')}
+                {t('bots.general.pairRegen')}
               </button>
               <button
                 className="ext-linkbtn"
                 onClick={() => {
                   setPair(null)
-                  void window.deva.android.pairCancel()
+                  void window.deva.general.pairCancel()
                 }}
               >
-                {t('bots.android.pairCancel')}
+                {t('bots.general.pairCancel')}
               </button>
             </div>
           </div>
@@ -968,8 +996,8 @@ function AndroidDetail(): React.JSX.Element {
       <div className="bots-card">
         <div className="bots-card__row">
           <div className="bots-card__label">
-            {t('bots.android.hostMode')}
-            <span className="bots-card__hint">{t('bots.android.hostModeHint')}</span>
+            {t('bots.general.hostMode')}
+            <span className="bots-card__hint">{t('bots.general.hostModeHint')}</span>
           </div>
           <div className="cf-seg">
             {(['0.0.0.0', '127.0.0.1'] as const).map((h) => (
@@ -977,12 +1005,12 @@ function AndroidDetail(): React.JSX.Element {
                 key={h}
                 className={`cf-seg__opt${st?.host === h ? ' is-on' : ''}`}
                 onClick={() => {
-                  void window.deva.android.setHost(h)
+                  void window.deva.general.setHost(h)
                   // 立即反馈：重启监听约一两秒，5s 轮询会把真实状态带回来
                   setSt((s0) => (s0 ? { ...s0, host: h, state: s0.state === 'connected' ? 'connecting' : s0.state } : s0))
                 }}
               >
-                {t(h === '0.0.0.0' ? 'bots.android.lan' : 'bots.android.localOnly')}
+                {t(h === '0.0.0.0' ? 'bots.general.lan' : 'bots.general.localOnly')}
               </button>
             ))}
           </div>
@@ -991,31 +1019,31 @@ function AndroidDetail(): React.JSX.Element {
 
       <div className="bots-card">
         <div className="bots-card__label">
-          {t('bots.android.devices')}
+          {t('bots.general.devices')}
           {st && <span className="bots-tag">{st.devices.length}</span>}
         </div>
         {!st || st.devices.length === 0 ? (
-          <p className="bots-card__empty">{t('bots.android.devicesEmpty')}</p>
+          <p className="bots-card__empty">{t('bots.general.devicesEmpty')}</p>
         ) : (
           st.devices.map((d) => (
             <div key={d.id} className="bots-user">
               <span className="bots-user__id">{d.name || d.id}</span>
-              {d.online && <span className="bots-tag">{t('bots.android.online')}</span>}
+              {d.online && <span className="bots-tag">{t('bots.general.online')}</span>}
               <span className="bots-user__at">{new Date(d.pairedAt).toLocaleString()}</span>
               {d.lastSeenAt > 0 && (
                 <span className="bots-user__at">
-                  {t('bots.android.lastSeen').replace('{t}', new Date(d.lastSeenAt).toLocaleString())}
+                  {t('bots.general.lastSeen').replace('{t}', new Date(d.lastSeenAt).toLocaleString())}
                 </span>
               )}
               <button className="ext-linkbtn" onClick={() => void revoke(d.id, d.name)}>
-                {t('bots.android.revoke')}
+                {t('bots.general.revoke')}
               </button>
             </div>
           ))
         )}
       </div>
 
-      <p className="bots-warn">{t('bots.android.plain')}</p>
+      <p className="bots-warn">{t('bots.general.plain')}</p>
     </>
   )
 }

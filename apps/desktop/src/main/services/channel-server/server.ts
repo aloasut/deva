@@ -9,14 +9,14 @@ import { ensureSession, getSession, listSessions, save as saveProject } from '..
 import type { StoredSession } from '../chat-store'
 import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from '../model-resolve'
 import { getPersona } from '../personas'
-import { setSecret } from '../secrets'
+import { deleteSecretsByPrefix, setSecret } from '../secrets'
 import type { Message } from '../../providers/types'
 import { isEffortLevel } from '../../../shared/effort'
 import type { ChannelState } from '../remote/types'
 import { deviceIdForToken, invalidateTokenCache } from './auth'
 import { noteDeviceSeen, noteDeviceStream } from './activity'
-import { addDevice, type AndroidServerConfig } from './config'
-import { consumePairCode, pairAttemptAllowed, verifyPairCode } from './pairing'
+import { addDevice, getGeneralServerConfig, type GeneralServerConfig } from './config'
+import { consumePairCodeIfMatch, pairAttemptAllowed } from './pairing'
 import { openTurnStream } from './sse'
 
 /**
@@ -237,20 +237,29 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const body = await readJson<{ code?: unknown; deviceName?: unknown }>(req)
       const code = typeof body?.code === 'string' ? body.code.trim() : ''
       if (!code) return json(res, 400, { error: '缺少配对码。' })
-      if (!verifyPairCode(code))
+      // 一次性原子消费：校验+作废同步完成，并发同码有且只有一个成功（设计 §3.2）
+      if (!consumePairCodeIfMatch(code))
         return json(res, 400, { error: '配对码不正确或已过期，请在电脑端重新生成。' })
       const deviceId = genDeviceId()
       const token = randomBytes(32).toString('base64url')
-      const saved = await setSecret(`android:${deviceId}:token`, token)
+      const saved = await setSecret(`general:${deviceId}:token`, token)
       if (!saved.ok)
         return json(res, 500, { error: '系统密钥存储不可用，无法安全保存设备凭据。' })
       const name =
         typeof body?.deviceName === 'string' && body.deviceName.trim()
           ? body.deviceName.trim().slice(0, 40)
-          : 'Android 设备'
+          : '通用设备'
+      // 设备名全局唯一（设计 §3.2）：重名拒绝（409），设备端换名重试。
+      // 检查与 addDevice 同步相邻（中间只隔同步调用），单线程下无并发窗口。
+      const clash = getGeneralServerConfig().devices.some(
+        (d) => d.name.trim().toLowerCase() === name.toLowerCase()
+      )
+      if (clash) {
+        await deleteSecretsByPrefix(`general:${deviceId}:`)
+        return json(res, 409, { error: `设备名「${name}」已被占用，请换一个名字再配对。` })
+      }
       addDevice({ id: deviceId, name, pairedAt: Date.now() })
       invalidateTokenCache()
-      consumePairCode() // 一次性：配对成功即作废当前码
       return json(res, 200, { deviceId, token })
     }
 
@@ -469,7 +478,7 @@ export async function startServer(opts: { host: string; port: number }, hooks: S
     hooks.onState(
       'error',
       code === 'EADDRINUSE'
-        ? `端口 ${opts.port} 已被占用，请在配置里换一个端口（config.json → androidServer.port）。`
+        ? `端口 ${opts.port} 已被占用，请在配置里换一个端口（config.json → generalServer.port）。`
         : errText(e)
     )
   })
@@ -493,4 +502,4 @@ export async function stopServer(): Promise<void> {
 }
 
 /** 供 channel-server/index.ts 组装配置（类型复用）。 */
-export type { AndroidServerConfig, ChannelState }
+export type { GeneralServerConfig, ChannelState }

@@ -73,7 +73,7 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 - 首次启用时生成一次性**配对码**（6 位数字，5 分钟有效），在桌面「机器人」面板的「通用设备」入口显示（列表置顶行 + 右侧详情，「+」菜单也提供通用设备项直达配对码），并附二维码（内容：`deva://pair?host=<host>&port=<port>&code=<code>`）。
 - **设备名全局唯一**：配对时若设备名（去首尾空格、不分大小写）与已配对设备重名，配对拒绝（409），设备端需换名重试。
 - **配对码一次性原子消费**：校验与作废在同一步同步完成（`consumePairCodeIfMatch`），并发同码配对有且只有一个成功——杜绝「校验→异步落密钥→作废」窗口期的双重接入竞态。
-- 手机 `POST /api/pair { code, deviceName, devicePubKey }` → 返回 `{ deviceId, token }`；token 为随机 32 字节，落盘 `secrets.json`，键 `android:<deviceId>:token`（沿用现有 secrets 约定，**不复用 `remote:<botId>:*`**）。
+- 手机 `POST /api/pair { code, deviceName, devicePubKey }` → 返回 `{ deviceId, token }`；token 为随机 32 字节，落盘 `secrets.json`，键 `general:<deviceId>:token`（沿用现有 secrets 约定，**不复用 `remote:<botId>:*`**）。
 - 之后所有请求带 `Authorization: Bearer <token>`；token 可在桌面端吊销（`DELETE /api/devices/:id`）。
 - 失败限速：同 IP 每分钟 10 次配对尝试，超限 429。
 - **明文 LAN 的边界**：v1 允许 http（局域网），但在桌面与手机两端都显式提示"当前为明文传输，建议仅在可信网络使用"；v2 提供自签证书 + 指纹校验。这条写进 §7 风险。

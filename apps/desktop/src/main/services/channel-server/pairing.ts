@@ -2,7 +2,7 @@ import { randomInt } from 'node:crypto'
 import { networkInterfaces } from 'node:os'
 
 /**
- * 安卓端的配对码（与 IM 通道的邀请码同构但独立）：6 位数字、5 分钟有效（设计 §3.2），
+ * 通用设备的配对码（与 IM 通道的邀请码同构但独立）：6 位数字、5 分钟有效（设计 §3.2），
  * 只在桌面「远程设备」面板显示；新码生成即顶替旧码，配对成功即作废（一次性）。
  * 暴力猜测由限速兜底：同 IP 每分钟 10 次配对尝试，超限 429（server.ts 调 pairAttemptAllowed）。
  */
@@ -35,9 +35,20 @@ export function verifyPairCode(code: string): boolean {
   return code === current.code
 }
 
-/** 配对成功后把当前码作废（一次性）。 */
-export function consumePairCode(): void {
+/**
+ * 配对码一次性原子消费：校验与作废在同一步同步完成（JS 单线程，无 await 间隙），
+ * 并发同码配对有且只有一个成功——堵死「校验 → 异步落密钥 → 作废」窗口期的双重接入竞态。
+ * 返回是否消费成功。
+ */
+export function consumePairCodeIfMatch(code: string): boolean {
+  if (!current) return false
+  if (current.expiresAt < Date.now()) {
+    current = null
+    return false
+  }
+  if (code !== current.code) return false
   current = null
+  return true
 }
 
 /** 滑动窗口限速；放行返回 true，超限 false（HTTP 429）。 */
