@@ -75,22 +75,22 @@
       "validatedRevision": "dedc73c7acd0bc9544c2eccc1ad008ae2cfed78a"
     },
     "android-client/design.mdx": {
-      "validatedRevision": "dedc73c7acd0bc9544c2eccc1ad008ae2cfed78a"
+      "validatedRevision": "6fd4765012ce8fe59e39809c6e317f8ec93ac9a1"
     },
     "channels/general-device-protocol.mdx": {
       "validatedRevision": "dedc73c7acd0bc9544c2eccc1ad008ae2cfed78a"
     },
     "channels/general-device-rest-api.mdx": {
-      "validatedRevision": "dedc73c7acd0bc9544c2eccc1ad008ae2cfed78a"
+      "validatedRevision": "6fd4765012ce8fe59e39809c6e317f8ec93ac9a1"
     },
     "channels/general-device-sse.mdx": {
-      "validatedRevision": "dedc73c7acd0bc9544c2eccc1ad008ae2cfed78a"
+      "validatedRevision": "6fd4765012ce8fe59e39809c6e317f8ec93ac9a1"
     },
     "channels/general-device-pairing.mdx": {
-      "validatedRevision": "dedc73c7acd0bc9544c2eccc1ad008ae2cfed78a"
+      "validatedRevision": "6fd4765012ce8fe59e39809c6e317f8ec93ac9a1"
     },
     "channels/general-device-client-guide.mdx": {
-      "validatedRevision": "dedc73c7acd0bc9544c2eccc1ad008ae2cfed78a"
+      "validatedRevision": "6fd4765012ce8fe59e39809c6e317f8ec93ac9a1"
     }
   },
   "convergence": {
