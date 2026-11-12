@@ -24,6 +24,14 @@ data class SessionMeta(
     val personaId: String?,
     /** 角色展示名（服务端解析；null = 未绑定或角色已删除）。列表徽标用，无需角色清单接口。 */
     val personaName: String?,
+    /** 聚焦工作区目录（绝对路径；null = 全机通用）。列表目录分组用。 */
+    val focusRoot: String?,
+    /** 有未决交互卡（ask/plan 等你作答）——列表「待操作」角标。 */
+    val pendingCard: Boolean,
+    /** 本对话当前固定的模型引用 "providerId:modelId"（null = 跟随全局默认）。 */
+    val model: String?,
+    /** 本对话当前固定的思考等级。 */
+    val effort: String?,
     /** 最后一条可见消息摘要（服务端投影，≤120 字符；null = 空会话）。 */
     val lastMessage: String?,
     val updatedAt: Long,
@@ -51,6 +59,28 @@ data class BackfillMsg(
 data class Backfill(val total: Int, val start: Int, val messages: List<BackfillMsg>)
 
 data class PairSuccess(val deviceId: String, val token: String)
+
+/** 启用中的角色（GET /api/personas）。 */
+data class PersonaInfo(val id: String, val name: String, val description: String)
+
+/** 定时任务只读条目（GET /api/tasks）。 */
+data class TaskInfo(
+    val id: String,
+    val title: String,
+    val status: String,
+    val scheduleKind: String,
+    val scheduleAt: String?,
+    val scheduleCron: String?,
+    /** 服务端本地化的人读日程（previewSchedule）。 */
+    val scheduleText: String,
+    /** 绑定会话 id（任务在其对话追加轮次；null = 独立）。 */
+    val sessionId: String?
+)
+
+/** 可用模型（GET /api/models）。ref 可直接用于 send 的 modelRef。 */
+data class ModelInfo(val ref: String, val name: String, val provider: String)
+
+data class ModelsResult(val models: List<ModelInfo>, val active: String?)
 
 data class ServerInfo(
     val version: String,
@@ -118,6 +148,10 @@ class DevaClient(
                         title = s.optString("title"),
                         personaId = s.optString("personaId").takeIf { it.isNotEmpty() },
                         personaName = s.optString("personaName").takeIf { it.isNotEmpty() },
+                        focusRoot = s.optString("focusRoot").takeIf { it.isNotEmpty() },
+                        pendingCard = s.optBoolean("pendingCard"),
+                        model = s.optString("model").takeIf { it.isNotEmpty() },
+                        effort = s.optString("effort").takeIf { it.isNotEmpty() },
                         lastMessage = s.optString("lastMessage").takeIf { it.isNotEmpty() },
                         updatedAt = s.optLong("updatedAt"),
                         busy = s.optBoolean("busy"),
@@ -129,13 +163,118 @@ class DevaClient(
             is ApiResult.Err -> r
         }
 
-    /** 新建空会话，返回会话 id。 */
-    suspend fun createSession(): ApiResult<String> =
-        when (val r = request("POST", "/api/sessions", JSONObject())) {
+    /**
+     * 新建空会话，返回会话 id。personaId 可选（新建即选定角色；沿桌面语义，首发落库后绑定不再改）。
+     */
+    suspend fun createSession(personaId: String? = null): ApiResult<String> {
+        val body = if (personaId != null) JSONObject().put("personaId", personaId) else JSONObject()
+        return when (val r = request("POST", "/api/sessions", body)) {
             is ApiResult.Ok -> {
                 val o = r.value ?: return ApiResult.Err("响应为空。")
                 ApiResult.Ok(o.getString("id"))
             }
+            is ApiResult.Err -> r
+        }
+    }
+
+    /** 单会话元信息（含当前 model/effort/focusRoot/pendingCard；带 query 不需要）。 */
+    suspend fun sessionMeta(sessionId: String): ApiResult<SessionMeta> =
+        when (val r = request("GET", "/api/sessions/${enc(sessionId)}")) {
+            is ApiResult.Ok -> {
+                val o = r.value ?: return ApiResult.Err("响应为空。")
+                ApiResult.Ok(
+                    SessionMeta(
+                        id = o.getString("id"),
+                        title = o.optString("title"),
+                        personaId = o.optString("personaId").takeIf { it.isNotEmpty() },
+                        personaName = o.optString("personaName").takeIf { it.isNotEmpty() },
+                        focusRoot = o.optString("focusRoot").takeIf { it.isNotEmpty() },
+                        pendingCard = o.optBoolean("pendingCard"),
+                        model = o.optString("model").takeIf { it.isNotEmpty() },
+                        effort = o.optString("effort").takeIf { it.isNotEmpty() },
+                        lastMessage = o.optString("lastMessage").takeIf { it.isNotEmpty() },
+                        updatedAt = o.optLong("updatedAt"),
+                        busy = o.optBoolean("busy"),
+                        archived = o.optBoolean("archived")
+                    )
+                )
+            }
+            is ApiResult.Err -> r
+        }
+
+    /** 启用中的角色清单。 */
+    suspend fun personas(): ApiResult<List<PersonaInfo>> =
+        when (val r = request("GET", "/api/personas")) {
+            is ApiResult.Ok -> {
+                val o = r.value ?: return ApiResult.Err("响应为空。")
+                val arr = o.optJSONArray("personas") ?: JSONArray()
+                ApiResult.Ok(
+                    (0 until arr.length()).mapNotNull { i ->
+                        arr.optJSONObject(i)?.let {
+                            PersonaInfo(it.optString("id"), it.optString("name"), it.optString("description"))
+                        }
+                    }
+                )
+            }
+            is ApiResult.Err -> r
+        }
+
+    /** 定时任务只读清单。 */
+    suspend fun tasks(): ApiResult<List<TaskInfo>> =
+        when (val r = request("GET", "/api/tasks")) {
+            is ApiResult.Ok -> {
+                val o = r.value ?: return ApiResult.Err("响应为空。")
+                val arr = o.optJSONArray("tasks") ?: JSONArray()
+                ApiResult.Ok(
+                    (0 until arr.length()).mapNotNull { i ->
+                        val t = arr.optJSONObject(i) ?: return@mapNotNull null
+                        val sch = t.optJSONObject("schedule")
+                        TaskInfo(
+                            id = t.getString("id"),
+                            title = t.optString("title"),
+                            status = t.optString("status", "active"),
+                            scheduleKind = sch?.optString("kind") ?: "recurring",
+                            scheduleAt = sch?.optString("at")?.takeIf { it.isNotEmpty() },
+                            scheduleCron = sch?.optString("cron")?.takeIf { it.isNotEmpty() },
+                            scheduleText = t.optString("scheduleText"),
+                            sessionId = t.optString("sessionId").takeIf { it.isNotEmpty() }
+                        )
+                    }
+                )
+            }
+            is ApiResult.Err -> r
+        }
+
+    /** 可用模型清单 + 当前全局默认 ref。 */
+    suspend fun models(): ApiResult<ModelsResult> =
+        when (val r = request("GET", "/api/models")) {
+            is ApiResult.Ok -> {
+                val o = r.value ?: return ApiResult.Err("响应为空。")
+                val arr = o.optJSONArray("models") ?: JSONArray()
+                val list = (0 until arr.length()).mapNotNull { i ->
+                    arr.optJSONObject(i)?.let {
+                        ModelInfo(it.optString("ref"), it.optString("name"), it.optString("provider"))
+                    }
+                }
+                ApiResult.Ok(ModelsResult(list, o.optString("active").takeIf { it.isNotEmpty() }))
+            }
+            is ApiResult.Err -> r
+        }
+
+    /** 重命名对话（空标题 = 恢复自动派生）。返回落库后的最终标题。 */
+    suspend fun renameSession(sessionId: String, title: String): ApiResult<String> =
+        when (val r = request("POST", "/api/sessions/${enc(sessionId)}/rename", JSONObject().put("title", title))) {
+            is ApiResult.Ok -> {
+                val o = r.value ?: return ApiResult.Err("响应为空。")
+                ApiResult.Ok(o.optString("title"))
+            }
+            is ApiResult.Err -> r
+        }
+
+    /** 删除对话（成员会话一并删；其中运行的定时任务改为独立运行）。 */
+    suspend fun deleteSession(sessionId: String): ApiResult<Unit> =
+        when (val r = request("DELETE", "/api/sessions/${enc(sessionId)}")) {
+            is ApiResult.Ok -> ApiResult.Ok(Unit)
             is ApiResult.Err -> r
         }
 
@@ -192,9 +331,15 @@ class DevaClient(
      * 返回空串(turnId 缺失)——调用方按空串提示,不再发起新回合。
      * attachments 为 /api/attachments 返回的服务端路径(忙时插入只带正文,附件被丢弃——与桌面/IM 同语义)。
      */
-    suspend fun send(sessionId: String, text: String, attachments: List<String> = emptyList()): ApiResult<String> {
+    suspend fun send(
+        sessionId: String,
+        text: String,
+        attachments: List<String> = emptyList(),
+        modelRef: String? = null
+    ): ApiResult<String> {
         val body = JSONObject().put("text", text)
         if (attachments.isNotEmpty()) body.put("attachments", JSONArray(attachments))
+        if (modelRef != null) body.put("modelRef", modelRef)
         return when (val r = request("POST", "/api/sessions/${enc(sessionId)}/send", body)) {
             is ApiResult.Ok -> {
                 val o = r.value ?: return ApiResult.Err("响应为空。")

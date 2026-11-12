@@ -16,9 +16,10 @@ import zai.deva.android.ui.ChatScreen
 import zai.deva.android.ui.DevaTheme
 import zai.deva.android.ui.HomeScreen
 import zai.deva.android.ui.SettingsScreen
+import zai.deva.android.ui.TasksScreen
 
 /**
- * 单 Activity + Compose Navigation（设计 §4）：home（服务器 + 会话列表）→ chat/:sessionId / settings。
+ * 单 Activity + Compose Navigation（设计 §4）：home（服务器 + 会话列表）→ chat/:sessionId / settings / tasks。
  */
 class MainActivity : ComponentActivity() {
 
@@ -37,7 +38,8 @@ class MainActivity : ComponentActivity() {
                         composable("home") {
                             HomeScreen(
                                 onOpenChat = { sid -> nav.navigate("chat/$sid") },
-                                onOpenSettings = { nav.navigate("settings") }
+                                onOpenSettings = { nav.navigate("settings") },
+                                onOpenTasks = { nav.navigate("tasks") }
                             )
                         }
                         composable("chat/{sid}") { entry ->
@@ -50,6 +52,12 @@ class MainActivity : ComponentActivity() {
                         }
                         composable("settings") {
                             SettingsScreen(onBack = { nav.popBackStack() })
+                        }
+                        composable("tasks") {
+                            TasksScreen(
+                                onBack = { nav.popBackStack() },
+                                onOpenChat = { sid -> nav.navigate("chat/$sid") }
+                            )
                         }
                     }
                 }
