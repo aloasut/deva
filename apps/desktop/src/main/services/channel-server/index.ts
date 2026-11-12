@@ -2,8 +2,8 @@ import { BrowserWindow, ipcMain } from 'electron'
 import QRCode from 'qrcode'
 import type { ChannelState } from '../remote/types'
 import { deleteSecretsByPrefix } from '../secrets'
-import { invalidateTokenCache } from './auth'
 import { getGeneralServerConfig, patchGeneralServer, removeDevice, renameDevice, setDeviceEnabled } from './config'
+import { invalidateTokenCache } from './auth'
 import { cancelPairCode, issuePairCode, lanHost, lanHosts } from './pairing'
 import { startServer, stopServer } from './server'
 import { closeDeviceConnections, dropSession, startEventStream, stopEventStream } from './sse'
@@ -149,7 +149,10 @@ export function registerChannelServerIpc(getWindow: () => BrowserWindow | null =
   // 单设备启停（审查 F1/F8）：false 即该设备请求一律 401
   ipcMain.handle('general:set-device-enabled', (_e, id: string, enabled: boolean): { ok: true } => {
     setDeviceEnabled(id, enabled)
-    if (!enabled) closeDeviceConnections(id)
+    if (!enabled) {
+      closeDeviceConnections(id)
+      invalidateTokenCache() // 立即失效:停用后该设备请求一律 401(否则缓存里旧 token 仍可用)
+    }
     return { ok: true }
   })
 

@@ -66,7 +66,7 @@ class DevaClient(
     private val baseUrl: String,
     /** token 取自 SecureStore；未配对时为 null，只有 pair 可用。 */
     private val tokenProvider: () -> String?,
-    /** 可注入共享 client（AppGraph 复用连接池）；缺省自建。 */
+    /** 可注入共享 client（AppGraph 复用连接池）；缺省自建。实际超时以注入值为准（AppGraph 用 10/10/10）。 */
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
