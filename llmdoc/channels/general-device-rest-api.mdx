@@ -36,6 +36,7 @@ relations:
 | POST | `/api/sessions/:id/archive` | 归档 / 取消归档 | Bearer |
 | POST | `/api/turns/:turnId/abort` | 停止回合 | Bearer |
 | POST | `/api/devices/self` | 自助吊销本设备(凭 token 自证) | Bearer |
+| POST | `/api/attachments?name=…` | 附件上传(原始字节,≤24MB) | Bearer |
 | GET | `/api/sessions/:id/messages` | 历史回填(`?start=&limit=`) | Bearer |
 | GET | `/api/sessions/:id/deliveries?toolUseId=` | 一次交付的文件清单 | Bearer |
 | GET | `/api/files?path=&session=` | 下载交付文件(白名单) | Bearer |
@@ -61,7 +62,7 @@ relations:
 
 ```json
 { "deviceId": "dev_mwd1accw_hdp0", "token": "<43 字符 base64url>", "protocol": 1,
-  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device","self-revoke","session-archive"] }
+  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device","self-revoke","session-archive","attachments"] }
 ```
 
 **错误**:`400` 配对码缺失/不正确/已过期(码此时才作废,失败不烧码);`409` 设备重名(**码不烧**);`429` 超限(同 IP 10 次/分,或全局连续失败 20 次熔断——桌面重新出码即解除)。
@@ -75,7 +76,7 @@ relations:
 ```json
 { "version": "33.4.11", "hostname": "MacBookProM1.local", "platform": "darwin",
   "firstRun": false, "protocol": 1,
-  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device","self-revoke","session-archive"] }
+  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device","self-revoke","session-archive","attachments"] }
 ```
 
 `firstRun` = 还没有任何**顶层会话**(成员会话/子智能体不计入,与 `/api/sessions` 列表同口径)。
@@ -128,7 +129,7 @@ relations:
 | 会话空闲,发起新回合 | `{ "turnId": "turn_…" }` | 记录 turnId,订阅事件流,乐观上屏用户气泡 |
 | 会话忙(有回合运行中) | `{ "inserted": true }` | 提示「已插入进行中的任务,当前步骤结束后送达」,**不新建订阅**(现有事件流会继续) |
 
-**请求**:`{ "text": "…", "attachments"?: ["…"], "modelRef"?: "providerId:modelId", "effort"?: "…" }`。`attachments`/`modelRef`/`effort` v1 设备端可不发(桌面按默认解析);发送时机在回合进行中也没关系——桌面语义是插入当前回合尾部。
+**请求**:`{ "text": "…", "attachments"?: ["…"], "modelRef"?: "providerId:modelId", "effort"?: "…" }`。`attachments` 的合法值只能来自 [`POST /api/attachments`](#post-apiattachments-附件上传) 返回的 path(未登记路径一律「已忽略未授权文件」,不当读盘);**忙时插入只带正文**(附件被丢弃,与桌面/IM 同语义)。`modelRef`/`effort` v1 设备端可不发(桌面按默认解析)。
 
 **错误**:`404` 会话不存在;`409` 忙且插入失败(罕见);`500` 其余(含模型未配置)。
 
@@ -184,6 +185,20 @@ relations:
 **请求**:无请求体。
 
 **响应**:`{ "ok": true }`。**此后该 token 一律 `401`**(包括本请求之后的任何重放)——设备端成功后应立即清除本地凭据(deviceId/token),引导重新配对。典型场景:设备丢失/易主时远程自救。前提:攻击者尚未更改凭据;若怀疑凭据泄漏,应在桌面端吊销该设备。
+
+---
+
+## POST /api/attachments?name=…
+
+附件上传(能力 `attachments`):设备端**只交字节、不交路径**——与桌面粘贴同一管道。
+
+**请求**:原始文件字节作为请求体(非 JSON),`name` query 指定文件名(服务端净化),`Content-Type` 作为类型提示。上限 24MB(`413`),空体 `400`。
+
+**响应**:`{ "path": "/abs/…", "name": "图片.png", "kind": "image" }`。`path` 仅供同 token 后续 send 的 `attachments[]` 使用。
+
+- 类型/体积超上限(图片>5MB、PDF>20MB、文本>512KB)不拒绝,降级为「位置注入」:文件落盘、`kind:"file"`,模型按路径用工具读。
+- 不支持的类型 → `400` 与原因文案。
+- 白名单为内存态(随重启清空):上传后桌面重启,该路径 send 会被忽略。
 
 ---
 

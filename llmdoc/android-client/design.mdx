@@ -102,6 +102,7 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 | POST | `/api/sessions/:id/answer` | 交互作答（`key`, `kind: ask/plan/mount`, `payload`） |
 | POST | `/api/sessions/:id/archive` | 归档 / 取消归档（`{archived: bool}`；忙时归档 409，与桌面同口径） |
 | POST | `/api/devices/self` | 自助吊销本设备（凭 token 自证 → removeDevice 全套清理 → 此后 401） |
+| POST | `/api/attachments?name=…` | 附件上传（原始字节 ≤24MB；桌面粘贴同管道，返回白名单路径供 send attachments[]） |
 | POST | `/api/turns/:turnId/abort` | 停止回合 |
 | GET | `/api/turns/:turnId/events?lastEventId=N` | SSE 事件流（支持 `Last-Event-ID` 续传；未知 turnId → 404） |
 | GET | `/api/sessions/:id/events?lastEventId=N` | **会话级 SSE**：该会话全部回合的 chat 帧 + 通知。设备端据此实时看到任意发起方的回合（验收线 4）；回合发现靠 `turn_start` 帧自带 turnId，`done` 帧清位 |
@@ -112,8 +113,8 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 `send` 内部转调 `ChatRuntime.send`，`answer` 转调 `answerAsk` / `decidePlan` / `answerMount`，`abort` 转调 `abort`。**入站通道不得自己拼接提示词、不得绕过 `tools-policy` 权限闸门**——它与桌面 IPC 走同一入口，保证落盘、检查点、安全闸门一致。
 
 错误码约定：400 参数/编码不合法；401 凭据无效（设备端转「请重新配对」终态）；403 越权（如 `/api/files` 白名单外路径）；404 不存在；409 业务冲突（会话忙、卡已结束、设备重名）；429 限速；500 其余。设备端按码展示，不猜测语义。
-协议版本化：`/api/info` 与 pair 响应均带 `protocol: 1` 与 `capabilities` 数组（如 `turn-stream` / `session-stream` / `answers` / `deliveries` / `files` / `set-host` / `set-enabled` / `rename-device` / `self-revoke` / `session-archive`）；设备端低于能力集时提示升级，不猜测语义。
-附件上传（`POST /api/attachments`）为 **v2 预留**：v1 设备端不发送附件，send 协议字段已留。无 `sessionId` 归属的通知（notice）v1 不投给任何 SSE 连接（当前所有通知都带 sessionId；如未来出现此类通知属协议扩展，同样 v2）。
+协议版本化：`/api/info` 与 pair 响应均带 `protocol: 1` 与 `capabilities` 数组（如 `turn-stream` / `session-stream` / `answers` / `deliveries` / `files` / `set-host` / `set-enabled` / `rename-device` / `self-revoke` / `session-archive` / `attachments`）；设备端低于能力集时提示升级，不猜测语义。
+附件上传已落 v1（能力 `attachments`）：`POST /api/attachments?name=…`（Bearer，原始字节 ≤24MB）——与桌面粘贴同一管道（字节落盘粘贴目录并登记白名单），返回 `{path,name,kind}`；路径仅可用于 send 的 `attachments[]`（send 侧未登记路径一律「已忽略未授权文件」，任意路径读盘不可能）；类型/体积超限降级为「位置注入」（kind=file），不支持类型 400。忙时插入只带正文（rt.insert 无附件入参，与桌面/IM 同语义）。无 `sessionId` 归属的通知（notice）v1 不投给任何 SSE 连接（当前所有通知都带 sessionId；如未来出现此类通知属协议扩展，同样 v2）。
 
 ### 3.4 事件流
 
