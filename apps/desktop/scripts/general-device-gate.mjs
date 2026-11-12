@@ -1,5 +1,7 @@
 // 通用设备通道协议回归门禁(手工/CI 均可运行)。
-// 编码了协议不变量:版本化、设备名唯一不烧码、配对码原子消费、会话级流三帧。
+// 编码了协议不变量:版本化、设备名唯一不烧码、配对码原子消费、会话级流三帧、
+// busy→insert 回退、忙时归档 409、lastMessage 列表字段、单会话 GET 带 query、
+// 回合级流未知 turnId 404、Origin 端口校验、归档/取消归档、自助吊销即刻 401。
 //
 // 前置(另开两个终端):
 //   1. 桌面实例:DEVA_HOME=<测试家目录> electron --remote-debugging-port=9227 \
@@ -36,7 +38,8 @@ async function issueCodeViaCDP() {
     returnByValue: true
   })
   ws.close()
-  return r.result.value.code
+  // CDP evaluate 响应形如 {id, result:{result:{type,value}}}——取 value 需两层 result
+  return r.result?.result?.value ?? r.result?.value
 }
 const code = async () => (await issueCodeViaCDP()).code
 const pair = (c, n) => {
@@ -46,6 +49,14 @@ const pair = (c, n) => {
   try { return JSON.parse(out) } catch { return { raw: out } }
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+/** 取 HTTP 状态码;SSE 端点挂流到 --max-time(curl 退出码 28)属预期,从 output 里捞状态码。 */
+const httpCode = (url, extra = '') => {
+  try {
+    return execSync(`curl -s -o /dev/null -w '%{http_code}' --max-time 3 ${extra} "${url}"`).toString().trim()
+  } catch (e) {
+    return (e.output?.[1]?.toString() ?? '').trim() || 'ERR'
+  }
+}
 
 let pass = 0, fail = 0
 const ok = (name, cond, detail = '') => { cond ? pass++ : fail++; console.log(`${cond ? '✅' : '❌'} ${name}${detail ? ' — ' + detail : ''}`) }
@@ -63,7 +74,7 @@ const c3 = await code()
 const dup = pair(c3, `${RUN}-dup-a`)
 ok('③a 首配成功', !!dup.token, dup.deviceId || dup.error)
 await sleep(7000)
-const c3b = code()
+const c3b = await code() // 必须等待:悬空出码会异步顶替后续刚取的码(实测 ④ wins=0 的根因)
 const dup2 = pair(c3b, `${RUN}-dup-a`) // 同名 → 409,不烧码
 ok('③b 重名 → 409', dup2.error && dup2.error.includes('已被占用'), dup2.error.slice(0, 40))
 
@@ -83,10 +94,61 @@ let captured = ''
 child.stdout.on('data', (d) => { captured += d.toString() })
 await sleep(1200) // 流连接稳定后再发送:turn_start 应实时到达
 execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${SID}/send" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"text":"count to 3"}' > /dev/null`)
+await sleep(1500) // 回合进行中(慢流 ~9s):趁忙验证 busy→insert 与忙时归档 409
+
+// ⑥ 会话忙再发 → 回退插入(inserted:true,与 IM 同口径)
+const ins = JSON.parse(execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${SID}/send" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"text":"insert me"}'`).toString())
+ok('⑥ 忙时发送 → {inserted:true}', ins.inserted === true, JSON.stringify(ins).slice(0, 60))
+
+// ⑦ 忙时归档 → 409(与桌面同口径)
+const archBusy = JSON.parse(execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${SID}/archive" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"archived":true}'`).toString())
+ok('⑦ 忙时归档 → 409', archBusy.error && archBusy.error.length > 0, (archBusy.error || '').slice(0, 40))
+
 await sleep(9000)
 child.kill()
 const uniq = [...new Set([...captured.matchAll(/"type":"([a-z_]+)"/g)].map((m) => m[1]))]
 ok('⑤ 会话级流含 turn_start/text_delta/done', uniq.includes('turn_start') && uniq.includes('text_delta') && uniq.includes('done'), uniq.join(' '))
+
+// ⑧ 列表带 personaName/lastMessage(空档期无 personaId → 无 personaName 字段)
+const list = JSON.parse(execSync(`curl -s "http://127.0.0.1:4317/api/sessions?limit=50" -H "Authorization: Bearer ${T5}"`).toString())
+const mine = list.sessions.find((s) => s.id === SID)
+ok('⑧ 列表带 lastMessage', typeof mine?.lastMessage === 'string' && mine.lastMessage.length > 0, mine?.lastMessage?.slice(0, 40))
+ok('⑧b 归档 false 缺省', mine?.archived === false)
+
+// ⑨ firstRun:已建会话后必为 false(列表同口径,不因成员会话矛盾)
+const info2 = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/info -H "Authorization: Bearer ${T5}"`).toString())
+ok('⑨ 有顶层会话后 firstRun=false', info2.firstRun === false)
+
+// ⑩ GET /api/sessions/:id 带 query 不再 404
+const one = JSON.parse(execSync(`curl -s "http://127.0.0.1:4317/api/sessions/${SID}?x=1&y=2" -H "Authorization: Bearer ${T5}"`).toString())
+ok('⑩ 单会话 GET 带 query → 200', one.id === SID, one.error || 'ok')
+
+// ⑪ 回合级 SSE:未知 turnId → 404;真实 turnId → 200(挂流被 --max-time 掐断,退出码 28 属预期)
+const bogus = httpCode(`http://127.0.0.1:4317/api/turns/bogus_turn_404/events`, `-H "Authorization: Bearer ${T5}"`)
+ok('⑪a 未知 turnId → 404', bogus === '404', `got ${bogus}`)
+const realTurn = [...captured.matchAll(/"turnId":"(turn_[A-Za-z0-9_-]+)"/g)].map((m) => m[1])[0]
+const real = realTurn
+  ? httpCode(`http://127.0.0.1:4317/api/turns/${realTurn}/events`, `-H "Authorization: Bearer ${T5}"`)
+  : 'no-turn'
+ok('⑪b 真实 turnId → 200', real === '200', `got ${real}`)
+
+// ⑫ Origin:端口不符 403(本机其他端口可伪造同主机名 Origin),端口相符 200
+const badOrigin = httpCode(`http://127.0.0.1:4317/api/info`, `-H "Origin: http://127.0.0.1:9999" -H "Authorization: Bearer ${T5}"`)
+const goodOrigin = httpCode(`http://127.0.0.1:4317/api/info`, `-H "Origin: http://127.0.0.1:4317" -H "Authorization: Bearer ${T5}"`)
+ok('⑫a Origin 端口不符 → 403', badOrigin === '403', `got ${badOrigin}`)
+ok('⑫b Origin 端口相符 → 200', goodOrigin === '200', `got ${goodOrigin}`)
+
+// ⑬ 归档 / 取消归档(空闲期)
+const archOk = JSON.parse(execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${SID}/archive" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"archived":true}'`).toString())
+const listArch = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}"`).toString())
+const archFlag = listArch.sessions.find((s) => s.id === SID)?.archived
+const unarchOk = JSON.parse(execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${SID}/archive" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"archived":false}'`).toString())
+ok('⑬ 归档→列表 archived=true→取消归档', archOk.ok === true && archFlag === true && unarchOk.ok === true, `arch=${archFlag}`)
+
+// ⑭ 自助吊销(用 ① 的设备):POST /api/devices/self → ok,同 token 即刻 401
+const rev = JSON.parse(execSync(`curl -s -X POST http://127.0.0.1:4317/api/devices/self -H "Authorization: Bearer ${T}"`).toString())
+const rev401 = execSync(`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4317/api/info -H "Authorization: Bearer ${T}"`).toString().trim()
+ok('⑭ 自助吊销 → ok + token 即刻 401', rev.ok === true && rev401 === '401', `revoke=${JSON.stringify(rev)} info=${rev401}`)
 
 console.log(`\n===== ${pass}/${pass + fail} PASS =====`)
 process.exit(fail ? 1 : 0)
