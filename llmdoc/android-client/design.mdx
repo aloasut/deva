@@ -92,9 +92,9 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 |---|---|---|
 | POST | `/api/pair` | 配对（唯一免鉴权接口） |
 | GET | `/api/info` | 版本、主机名、平台、是否首次运行（= 无任何**顶层**会话，成员会话不计）；带 `protocol`（协议版本号）与 `capabilities` 数组 |
-| GET | `/api/sessions` | 会话列表（同上；可选 `?limit=` 前缀截断）。**成员会话(parentId)不进列表**(与 hub 同口径)；每项带 `personaName`（服务端解析的角色展示名，徽标用）与 `lastMessage`（最后消息摘要 ≤120 字） |
-| POST | `/api/sessions` | 新建会话（v1 只收空体；预留的 `personaId` / `workspaceRoot` 入参为 **v2**） |
-| GET | `/api/sessions/:id` | 单会话元信息（title/personaId/personaName/busy/archived/lastMessage；query 忽略；pendingInserts v1 恒空——插入走 send 忙时回退） |
+| GET | `/api/sessions` | 会话列表（同上；可选 `?limit=` 前缀截断）。**成员会话(parentId)不进列表**(与 hub 同口径)；每项带 `personaName`（服务端解析的角色展示名，徽标用）、`lastMessage`（最后消息摘要 ≤120 字）、`focusRoot`（目录分组）与 `pendingCard`（未决卡「待操作」角标）；分类排序由设备端按字段自定 |
+| POST | `/api/sessions` | 新建会话（可选 `personaId`——绑定沿桌面语义首发后不可改；`workspaceRoot` 仍为 v2） |
+| GET | `/api/sessions/:id` | 单会话元信息（title/personaId/personaName/busy/archived/lastMessage/pendingCard/model/effort/focusRoot；query 忽略；pendingInserts v1 恒空——插入走 send 忙时回退） |
 | POST | `/api/sessions/:id/send` | 发消息（`text`, `attachments[]`, `modelRef?`, `effort?`） |
 | GET | `/api/sessions/:id` | 单会话元信息（title/personaId/busy/archived；pendingInserts v1 恒空——插入走 send 忙时回退） |
 | POST | `/api/sessions/:id/send`（会话忙时） | 忙 → 回退为**插入进行中的任务**（与 hub/IM 同口径），响应 `{inserted:true}`；否则 `{turnId}` |
@@ -102,6 +102,11 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 | POST | `/api/sessions/:id/answer` | 交互作答（`key`, `kind: ask/plan/mount`, `payload`） |
 | POST | `/api/sessions/:id/archive` | 归档 / 取消归档（`{archived: bool}`；忙时归档 409，与桌面同口径） |
 | POST | `/api/devices/self` | 自助吊销本设备（凭 token 自证 → removeDevice 全套清理 → 此后 401） |
+| GET | `/api/personas` | 启用中的角色清单（新建对话选角色用；绑定首发后不可改） |
+| GET | `/api/tasks` | 定时任务只读清单（scheduleText 为服务端本地化人读日程） |
+| GET | `/api/models` | 可用模型清单 + 当前全局默认（send modelRef 取值来源） |
+| POST | `/api/sessions/:id/rename` | 重命名对话（空标题=恢复自动派生；不改 updatedAt） |
+| DELETE | `/api/sessions/:id` | 删除对话（成员会话一并删；其中定时任务改独立运行；回合先中止） |
 | POST | `/api/attachments?name=…` | 附件上传（原始字节 ≤24MB；桌面粘贴同管道，返回白名单路径供 send attachments[]） |
 | POST | `/api/turns/:turnId/abort` | 停止回合 |
 | GET | `/api/turns/:turnId/events?lastEventId=N` | SSE 事件流（支持 `Last-Event-ID` 续传；未知 turnId → 404） |
@@ -113,7 +118,7 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 `send` 内部转调 `ChatRuntime.send`，`answer` 转调 `answerAsk` / `decidePlan` / `answerMount`，`abort` 转调 `abort`。**入站通道不得自己拼接提示词、不得绕过 `tools-policy` 权限闸门**——它与桌面 IPC 走同一入口，保证落盘、检查点、安全闸门一致。
 
 错误码约定：400 参数/编码不合法；401 凭据无效（设备端转「请重新配对」终态）；403 越权（如 `/api/files` 白名单外路径）；404 不存在；409 业务冲突（会话忙、卡已结束、设备重名）；429 限速；500 其余。设备端按码展示，不猜测语义。
-协议版本化：`/api/info` 与 pair 响应均带 `protocol: 1` 与 `capabilities` 数组（如 `turn-stream` / `session-stream` / `answers` / `deliveries` / `files` / `set-host` / `set-enabled` / `rename-device` / `self-revoke` / `session-archive` / `attachments`）；设备端低于能力集时提示升级，不猜测语义。
+协议版本化：`/api/info` 与 pair 响应均带 `protocol: 1` 与 `capabilities` 数组（如 `turn-stream` / `session-stream` / `answers` / `deliveries` / `files` / `set-host` / `set-enabled` / `rename-device` / `self-revoke` / `session-archive` / `attachments` / `personas` / `session-delete` / `session-rename` / `tasks` / `models`）；设备端低于能力集时提示升级，不猜测语义。
 附件上传已落 v1（能力 `attachments`）：`POST /api/attachments?name=…`（Bearer，原始字节 ≤24MB）——与桌面粘贴同一管道（字节落盘粘贴目录并登记白名单），返回 `{path,name,kind}`；路径仅可用于 send 的 `attachments[]`（send 侧未登记路径一律「已忽略未授权文件」，任意路径读盘不可能）；类型/体积超限降级为「位置注入」（kind=file），不支持类型 400。忙时插入只带正文（rt.insert 无附件入参，与桌面/IM 同语义）。无 `sessionId` 归属的通知（notice）v1 不投给任何 SSE 连接（当前所有通知都带 sessionId；如未来出现此类通知属协议扩展，同样 v2）。
 
 ### 3.4 事件流

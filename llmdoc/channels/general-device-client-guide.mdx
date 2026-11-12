@@ -70,7 +70,19 @@ curl -s -X POST "http://$H/api/sessions/$SID/send" \
   -H "Authorization: Bearer $CURL_TOKEN" -H 'content-type: application/json' \
   -d '{"text":"看这张图","attachments":["<上一步的 path>"]}'
 
-# 8. 下载交付文件(收到 present_files 交付后;路径必须在交付白名单内)
+# 8. 角色列表/建会话选角色(绑定首发后不可改);任务只读清单;模型清单
+curl -s "http://$H/api/personas" -H "Authorization: Bearer $CURL_TOKEN"
+curl -s -X POST "http://$H/api/sessions" -H "Authorization: Bearer $CURL_TOKEN" \
+  -H 'content-type: application/json' -d '{"personaId":"<上一步的 id>"}'
+curl -s "http://$H/api/tasks" -H "Authorization: Bearer $CURL_TOKEN"
+curl -s "http://$H/api/models" -H "Authorization: Bearer $CURL_TOKEN"
+
+# 9. 重命名 / 删除对话(删除不可恢复,设备端应二次确认;空标题=恢复自动派生)
+curl -s -X POST "http://$H/api/sessions/$SID/rename" -H "Authorization: Bearer $CURL_TOKEN" \
+  -H 'content-type: application/json' -d '{"title":"新名字"}'
+curl -s -X DELETE "http://$H/api/sessions/$SID" -H "Authorization: Bearer $CURL_TOKEN"
+
+# 10. 下载交付文件(收到 present_files 交付后;路径必须在交付白名单内)
 curl -s -o out.png "http://$H/api/files?path=<urlencoded 路径>&session=$SID" \
   -H "Authorization: Bearer $CURL_TOKEN"
 ```
