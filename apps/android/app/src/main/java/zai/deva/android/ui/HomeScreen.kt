@@ -4,8 +4,6 @@ import android.text.format.DateUtils
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,15 +13,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
@@ -31,15 +35,16 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -61,17 +66,14 @@ import zai.deva.android.core.PersonaInfo
 import zai.deva.android.core.ServerConfig
 import zai.deva.android.core.SessionMeta
 
-/** 会话列表分组维度。 */
+/** 会话列表分组维度（默认不分组=注意力分区；整理入口在顶栏 ⋮ 菜单）。 */
 private enum class GroupMode { NONE, PERSONA, FOLDER }
 
-/** 会话列表排序方式。 */
-private enum class SortMode { RECENT, ACTIVE_FIRST }
-
 /**
- * 服务器 + 会话列表（设计 §5-1/2）：顶部当前服务器与连接状态；分组（综合/按角色/按目录）与
- * 排序（最近/活跃优先）由本页按服务端字段自定；每项显示标题、待操作角标、角色徽标、目录、
- * 最后消息摘要、忙/闲、相对时间。FAB 新建会话（可选角色——绑定沿桌面语义，首发后不再改）。
- * 长按会话项：重命名 / 归档 / 删除（删除二次确认；服务端忙时归档回 409 提示）。
+ * 会话列表（心流形态）：默认**注意力分区**——「需要你」(有未决卡) → 「进行中」(回合运行) → 「最近」
+ * （其余按更新时间），打开 App 即见需要处理的对话，无任何筛选决策。归档默认隐藏（⋮ 可临时显示）。
+ * 行内只保留关键信号：标题、摘要、待操作角标、相对时间；角色/目录并入次行文字（分组视图下自动去冗余）。
+ * FAB → 角色选择（搜索 + 点选直达创建，角色多时可用）；不选角色即默认直建。
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -82,9 +84,10 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit, onOpenT
     val scope = rememberCoroutineScope()
     var refreshError by remember { mutableStateOf<String?>(null) }
     var actionTarget by remember { mutableStateOf<SessionMeta?>(null) }
-    var showNewSession by remember { mutableStateOf(false) }
+    var showPersonaPicker by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     var groupMode by remember { mutableStateOf(GroupMode.NONE) }
-    var sortMode by remember { mutableStateOf(SortMode.RECENT) }
+    var showArchived by remember { mutableStateOf(false) }
 
     // 进入 / 回到首页时刷新列表（失败给横幅：可重试；401 引导去设置重新配对）
     LaunchedEffect(Unit) {
@@ -115,6 +118,9 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit, onOpenT
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Default.Settings, contentDescription = "设置")
                     }
+                    IconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "整理")
+                    }
                 }
             )
         },
@@ -125,11 +131,11 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit, onOpenT
                 ExtendedFloatingActionButton(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
-                    onClick = { showNewSession = true }
+                    onClick = { showPersonaPicker = true }
                 ) {
                     Icon(Icons.Default.Add, contentDescription = null)
                     Spacer(Modifier.width(6.dp))
-                    Text("新建会话")
+                    Text("新对话")
                 }
             }
         }
@@ -143,7 +149,6 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit, onOpenT
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 错误横幅（P5 错误态）：连不上 / 401 都在此提示，不用 snackbar 一闪而过
                 refreshError?.let { msg ->
                     item(key = "error") {
                         ElevatedCard(
@@ -177,60 +182,29 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit, onOpenT
                     }
                 }
 
-                // 分组 / 排序控制行（需求 1：按角色/目录分类，活跃优先排序）
-                item(key = "controls") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        FilterChip(
-                            selected = sortMode == SortMode.RECENT,
-                            onClick = { sortMode = SortMode.RECENT },
-                            label = { Text("最近") }
-                        )
-                        FilterChip(
-                            selected = sortMode == SortMode.ACTIVE_FIRST,
-                            onClick = { sortMode = SortMode.ACTIVE_FIRST },
-                            label = { Text("活跃优先") }
-                        )
-                        FilterChip(
-                            selected = groupMode == GroupMode.NONE,
-                            onClick = { groupMode = GroupMode.NONE },
-                            label = { Text("综合") }
-                        )
-                        FilterChip(
-                            selected = groupMode == GroupMode.PERSONA,
-                            onClick = { groupMode = GroupMode.PERSONA },
-                            label = { Text("按角色") }
-                        )
-                        FilterChip(
-                            selected = groupMode == GroupMode.FOLDER,
-                            onClick = { groupMode = GroupMode.FOLDER },
-                            label = { Text("按目录") }
-                        )
-                    }
-                }
-
-                val display = buildDisplayRows(sessions, groupMode, sortMode)
+                val display = buildDisplayRows(sessions, groupMode, showArchived)
                 items(display, key = { it.key }) { entry ->
                     when (entry) {
                         is DisplayRow.Header -> Text(
                             entry.label,
                             style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (entry.accent) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 6.dp)
                         )
                         is DisplayRow.Item -> SessionRow(
                             entry.session,
+                            hidePersona = groupMode == GroupMode.PERSONA,
+                            hideFolder = groupMode == GroupMode.FOLDER,
                             onClick = { onOpenChat(entry.session.id) },
                             onLongClick = { actionTarget = entry.session }
                         )
                     }
                 }
-                if (sessions.isEmpty()) {
+                if (display.isEmpty()) {
                     item {
                         Text(
-                            "还没有会话。点右下角「新建会话」开始。",
+                            "没有需要处理的对话。点右下角「新对话」开始。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(vertical = 24.dp)
@@ -319,12 +293,46 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit, onOpenT
         )
     }
 
-    if (showNewSession) {
-        NewSessionDialog(
+    if (menuOpen) {
+        AlertDialog(
+            onDismissRequest = { menuOpen = false },
+            title = { Text("整理") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "分组",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = groupMode == GroupMode.NONE, onClick = { groupMode = GroupMode.NONE })
+                        Text("不分组（按注意力分区）")
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = groupMode == GroupMode.PERSONA, onClick = { groupMode = GroupMode.PERSONA })
+                        Text("按角色")
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = groupMode == GroupMode.FOLDER, onClick = { groupMode = GroupMode.FOLDER })
+                        Text("按目录")
+                    }
+                    HorizontalDivider()
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("显示已归档", modifier = Modifier.weight(1f))
+                        Switch(checked = showArchived, onCheckedChange = { showArchived = it })
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { menuOpen = false }) { Text("完成") } }
+        )
+    }
+
+    if (showPersonaPicker) {
+        PersonaPickerDialog(
             snackbar = snackbar,
-            onDismiss = { showNewSession = false },
+            onDismiss = { showPersonaPicker = false },
             onCreated = { id ->
-                showNewSession = false
+                showPersonaPicker = false
                 scope.launch {
                     AppGraph.client()?.let { AppGraph.sessions.refresh(it) }
                     onOpenChat(id)
@@ -334,11 +342,11 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit, onOpenT
     }
 }
 
-/** 列表展示条目（分组头或会话行）。 */
+/** 列表展示条目（分区头或会话行）。 */
 private sealed interface DisplayRow {
     val key: String
 
-    data class Header(val label: String) : DisplayRow {
+    data class Header(val label: String, val accent: Boolean = false) : DisplayRow {
         override val key: String = "h:$label"
     }
 
@@ -347,27 +355,71 @@ private sealed interface DisplayRow {
     }
 }
 
+private val RECENT = Comparator<SessionMeta> { a, b -> b.updatedAt.compareTo(a.updatedAt) }
+
+/**
+ * 心流默认视图：需要你(未决卡) → 进行中(回合运行) → 最近(其余) → 已归档(仅显式显示时)。
+ * 分组视图（按角色/目录）：组间按组内最新活动排，组内按注意力排序；归档同样仅显式显示时尾随。
+ */
 private fun buildDisplayRows(
     sessions: List<SessionMeta>,
     groupMode: GroupMode,
-    sortMode: SortMode
+    showArchived: Boolean
 ): List<DisplayRow> {
-    val sorted = if (sortMode == SortMode.ACTIVE_FIRST) {
-        sessions.sortedWith(compareByDescending<SessionMeta> { it.busy }.thenByDescending { it.updatedAt })
-    } else {
-        sessions.sortedByDescending { it.updatedAt }
+    val visible = sessions.filter { showArchived || !it.archived }
+    if (visible.isEmpty()) return emptyList()
+
+    if (groupMode == GroupMode.NONE) {
+        // 归档会话只进尾部的「已归档」区(showArchived 时),绝不混入活动分区——否则 LazyColumn key 重复
+        val active = visible.filter { !it.archived }
+        val todo = active.filter { it.pendingCard }.sortedWith(RECENT)
+        val busy = active.filter { !it.pendingCard && it.busy }.sortedWith(RECENT)
+        val rest = active.filter { !it.pendingCard && !it.busy }.sortedWith(RECENT)
+        val rows = mutableListOf<DisplayRow>()
+        if (todo.isNotEmpty()) rows += DisplayRow.Header("需要你", accent = true)
+        rows += todo.map { DisplayRow.Item(it) }
+        if (busy.isNotEmpty()) rows += DisplayRow.Header("进行中")
+        rows += busy.map { DisplayRow.Item(it) }
+        if (rest.isNotEmpty()) rows += DisplayRow.Header("最近")
+        rows += rest.map { DisplayRow.Item(it) }
+        if (showArchived) {
+            val archived = visible.filter { it.archived }.sortedWith(RECENT)
+            if (archived.isNotEmpty()) {
+                rows += DisplayRow.Header("已归档")
+                rows += archived.map { DisplayRow.Item(it) }
+            }
+        }
+        return rows
     }
-    if (groupMode == GroupMode.NONE) return sorted.map { DisplayRow.Item(it) }
+
+    // 分组视图：组间按组内最新活动，组内按注意力（未决卡 → 忙 → 其余）排序
     val labelOf: (SessionMeta) -> String = when (groupMode) {
         GroupMode.PERSONA -> { s -> s.personaName ?: "默认" }
         GroupMode.FOLDER -> { s -> s.focusRoot?.substringAfterLast('/')?.ifBlank { "目录" } ?: "全机" }
-        GroupMode.NONE -> return sorted.map { DisplayRow.Item(it) }
+        GroupMode.NONE -> return emptyList()
     }
-    // 组内保持排序序；组间按组内最新的 updatedAt 排（活跃的组在前）
-    val groups = sorted.groupBy(labelOf)
-    return groups.entries
-        .sortedByDescending { (_, v) -> v.maxOf { it.updatedAt } }
-        .flatMap { (label, list) -> listOf(DisplayRow.Header(label)) + list.map { DisplayRow.Item(it) } }
+    val attention = Comparator<SessionMeta> { a, b ->
+        when {
+            a.pendingCard != b.pendingCard -> if (a.pendingCard) -1 else 1
+            a.busy != b.busy -> if (a.busy) -1 else 1
+            else -> b.updatedAt.compareTo(a.updatedAt)
+        }
+    }
+    val rows = mutableListOf<DisplayRow>()
+    visible.filter { !it.archived }.groupBy(labelOf)
+        .entries.sortedByDescending { (_, v) -> v.maxOf { it.updatedAt } }
+        .forEach { (label, list) ->
+            rows += DisplayRow.Header(label)
+            rows += list.sortedWith(attention).map { DisplayRow.Item(it) }
+        }
+    if (showArchived) {
+        val archived = visible.filter { it.archived }.sortedWith(RECENT)
+        if (archived.isNotEmpty()) {
+            rows += DisplayRow.Header("已归档")
+            rows += archived.map { DisplayRow.Item(it) }
+        }
+    }
+    return rows
 }
 
 private fun serverStatusText(server: ServerConfig?): String =
@@ -401,9 +453,19 @@ private fun EmptyState(pad: PaddingValues, onOpenSettings: () -> Unit) {
     }
 }
 
+/**
+ * 会话行（降噪版）：标题 + 摘要 + 一行次要文字（待操作角标 + 角色 · 目录 · 时间）。
+ * 分组视图下与组头冗余的维度自动隐藏（按角色分组时行内不再重复角色名）。
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(s: SessionMeta, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun SessionRow(
+    s: SessionMeta,
+    hidePersona: Boolean,
+    hideFolder: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -428,6 +490,17 @@ private fun SessionRow(s: SessionMeta, onClick: () -> Unit, onLongClick: () -> U
                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                 }
+                val secondary = buildString {
+                    if (!hidePersona) s.personaName?.let { append(it).append(" · ") }
+                    if (!hideFolder) s.focusRoot?.let { append(it.substringAfterLast('/')).append(" · ") }
+                    append(
+                        DateUtils.getRelativeTimeSpanString(
+                            s.updatedAt,
+                            System.currentTimeMillis(),
+                            DateUtils.MINUTE_IN_MILLIS
+                        ).toString()
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (s.pendingCard) {
                         Text(
@@ -439,41 +512,12 @@ private fun SessionRow(s: SessionMeta, onClick: () -> Unit, onLongClick: () -> U
                                 .padding(horizontal = 6.dp, vertical = 1.dp)
                         )
                     }
-                    s.personaName?.let {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier
-                                .background(
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-                                    RoundedCornerShape(4.dp)
-                                )
-                                .padding(horizontal = 6.dp, vertical = 1.dp)
-                        )
-                    }
-                    s.focusRoot?.let {
-                        Text(
-                            it.substringAfterLast('/'),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (s.archived) {
-                        Text(
-                            "已归档",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                     Text(
-                        DateUtils.getRelativeTimeSpanString(
-                            s.updatedAt,
-                            System.currentTimeMillis(),
-                            DateUtils.MINUTE_IN_MILLIS
-                        ).toString(),
+                        secondary,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                     )
                 }
             }
@@ -484,17 +528,20 @@ private fun SessionRow(s: SessionMeta, onClick: () -> Unit, onLongClick: () -> U
     }
 }
 
-/** 新建会话弹窗：可选启用中的角色（拉取失败则只给「不选角色」直建）。 */
+/**
+ * 新建会话的角色选择（FAB 直达）：搜索过滤 + **点选即创建**（角色多时的快速路径）。
+ * 「不选角色」= 与桌面新建同语义（首发落库时绑定默认角色）。绑定后不可改，条目描述注明。
+ */
 @Composable
-private fun NewSessionDialog(
+private fun PersonaPickerDialog(
     snackbar: SnackbarHostState,
     onDismiss: () -> Unit,
     onCreated: (String) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var personas by remember { mutableStateOf<List<PersonaInfo>?>(null) }
-    var selected by remember { mutableStateOf<String?>(null) }
-    var creating by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var creatingWith by remember { mutableStateOf<String?>("__none__") } // "__none__" = 无在飞创建
 
     LaunchedEffect(Unit) {
         val client = AppGraph.client() ?: return@LaunchedEffect
@@ -504,54 +551,103 @@ private fun NewSessionDialog(
         }
     }
 
+    fun create(personaId: String?) {
+        if (creatingWith != "__none__") return // 防双击双建
+        creatingWith = personaId
+        val client = AppGraph.client()
+        if (client == null) {
+            creatingWith = "__none__"
+            return
+        }
+        scope.launch {
+            when (val r = client.createSession(personaId)) {
+                is ApiResult.Ok -> onCreated(r.value)
+                is ApiResult.Err -> {
+                    snackbar.showSnackbar(r.message)
+                    creatingWith = "__none__"
+                }
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("新建会话") },
+        title = { Text("新对话") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "选择角色（可选；绑定后该对话固定用它，首发后不可再改）",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("搜索角色…") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 when (val p = personas) {
                     null -> CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    else -> Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        FilterChip(
-                            selected = selected == null,
-                            onClick = { selected = null },
-                            label = { Text("不选角色") }
-                        )
-                        p.forEach { persona ->
-                            FilterChip(
-                                selected = selected == persona.id,
-                                onClick = { selected = persona.id },
-                                label = { Text(persona.name, maxLines = 1) }
+                    else -> {
+                        val filtered = if (query.isBlank()) p
+                        else p.filter {
+                            it.name.contains(query, ignoreCase = true) ||
+                                it.description.contains(query, ignoreCase = true)
+                        }
+                        Column(
+                            modifier = Modifier
+                                .heightIn(max = 360.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            PersonaPickRow(
+                                name = "不选角色",
+                                description = "直接开始；首发时绑定默认角色",
+                                enabled = creatingWith == "__none__",
+                                onClick = { create(null) }
                             )
+                            filtered.forEach { persona ->
+                                PersonaPickRow(
+                                    name = persona.name,
+                                    description = persona.description.ifBlank { "绑定后不可改" },
+                                    enabled = creatingWith == "__none__",
+                                    onClick = { create(persona.id) }
+                                )
+                            }
+                            if (filtered.isEmpty()) {
+                                Text(
+                                    "没有匹配的角色",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(vertical = 8.dp)
+                                )
+                            }
                         }
                     }
                 }
             }
         },
-        confirmButton = {
-            TextButton(
-                enabled = !creating,
-                onClick = {
-                    val client = AppGraph.client() ?: return@TextButton
-                    creating = true
-                    scope.launch {
-                        when (val r = client.createSession(selected)) {
-                            is ApiResult.Ok -> onCreated(r.value)
-                            is ApiResult.Err -> snackbar.showSnackbar(r.message)
-                        }
-                        creating = false
-                    }
-                }
-            ) { Text(if (creating) "创建中…" else "创建") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun PersonaPickRow(
+    name: String,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 8.dp)
+    ) {
+        Text(name, style = MaterialTheme.typography.bodyLarge)
+        Text(
+            description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+        )
+    }
 }
