@@ -1134,7 +1134,7 @@ function isQuestionOptional(question: string, explicit: unknown): boolean {
  * 若缺失/为空但存在顶层 `question`（旧式或跑偏调用），防御性收编成单元素；
  * 仍为空则兜底为一条通用问题——绝不向渲染层抛空卡。
  */
-function parseAskQuestions(args: unknown): AskQuestion[] {
+export function parseAskQuestions(args: unknown): AskQuestion[] {
   const a = (args ?? {}) as { questions?: unknown; question?: unknown; options?: unknown }
   const out: AskQuestion[] = []
   if (Array.isArray(a.questions)) {
@@ -3759,9 +3759,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   function askUser(
     turnId: string,
     sessionId: string,
-    questions: AskQuestion[]
+    questions: AskQuestion[],
+    /** 卡键 = 交互工具的 toolUseId（与 asks 边车、历史回填卡同源）；上游缺 id 时兜底现造。 */
+    toolUseId?: string
   ): Promise<string[] | null> {
-    const key = genId('ask')
+    const key = toolUseId || genId('ask')
     emit(turnId, sessionId, { type: 'ask_user', key, questions })
     notifyPending(turnId, sessionId, { kind: 'ask', questions: questions.map((q) => q.question) })
     return timedWait(turnId, new Promise((resolve) => pendingAsk.set(key, { resolve, turnId, sessionId })))
@@ -3774,9 +3776,11 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   function reviewPlan(
     turnId: string,
     sessionId: string,
-    plan: string
+    plan: string,
+    /** 卡键 = 交互工具的 toolUseId（与 plans 边车、历史回填卡同源）；上游缺 id 时兜底现造。 */
+    toolUseId?: string
   ): Promise<PlanVerdict | null> {
-    const key = genId('plan')
+    const key = toolUseId || genId('plan')
     emit(turnId, sessionId, { type: 'plan_review', key, plan })
     notifyPending(turnId, sessionId, { kind: 'plan' })
     return timedWait(turnId, new Promise((resolve) => pendingPlan.set(key, { resolve, turnId, sessionId })))
@@ -4737,7 +4741,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
           }
           const pa = (tc.args ?? {}) as { plan?: unknown }
           const plan = typeof pa.plan === 'string' ? pa.plan : ''
-          const verdict = await reviewPlan(turnId, sessionId, plan)
+          const verdict = await reviewPlan(turnId, sessionId, plan, tc.id)
           const decision = verdict?.decision ?? null
           const feedback = verdict?.feedback
           // 决定存入 plans 边车（按 toolUseId），供重开还原计划卡；null=取消。仅主轮回调。
@@ -4792,7 +4796,7 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
         // ask_user 特判：不过权限闸门，暂停循环等用户抉择，答复回灌为 tool_result（子轮禁用）。
         if (allowAskUser && tc.name === 'ask_user') {
           const questions = parseAskQuestions(tc.args)
-          const answers = await askUser(turnId, sessionId, questions)
+          const answers = await askUser(turnId, sessionId, questions, tc.id)
           // 答案存入 asks 边车（按 toolUseId），供重开还原问答卡；null=取消。仅主轮回调。
           args.onAskAnswered?.(tc.id, answers)
           resultParts.push({

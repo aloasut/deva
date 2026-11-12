@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 import zai.deva.android.AppGraph
 import zai.deva.android.core.ApiResult
 import zai.deva.android.core.TimelineItem
@@ -64,6 +65,20 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
     val listState = rememberLazyListState()
 
     val client = AppGraph.client()
+
+    // 卡片作答回调：结果由 interaction_resolved 帧收起（桌面/手机同机制，先到的答复生效）
+    val onAnswer = { kind: String, key: String, payload: JSONObject ->
+        val c = AppGraph.client()
+        if (c != null) {
+            scope.launch {
+                when (val r = c.answer(sessionId, key, kind, payload)) {
+                    is ApiResult.Err -> snackbar.showSnackbar(r.message)
+                    is ApiResult.Ok -> Unit
+                }
+            }
+        }
+        Unit
+    }
 
     // 进入会话：回填历史；若有活动回合（发送时切走又回来）恢复订阅
     LaunchedEffect(sessionId) {
@@ -124,10 +139,11 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                items(items) { item -> TimelineRow(item) }
+                items(items) { item -> TimelineRow(item, onAnswer) }
             }
 
-            // 底部输入区：有活动回合时显示停止
+            // Waiting 态（有未决卡）：输入框禁用并提示，防止用户打字却被静默丢弃（设计 §4 状态机）
+            val hasPendingCard = items.any { it is TimelineItem.Card && it.resolved == null }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.Bottom
@@ -136,7 +152,8 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
                     value = input,
                     onValueChange = { input = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("发消息…") },
+                    placeholder = { Text(if (hasPendingCard) "等待你在下方卡片中作答…" else "发消息…") },
+                    enabled = !hasPendingCard,
                     maxLines = 5
                 )
                 if (activeTurn != null) {
@@ -156,6 +173,7 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
                     }
                 } else {
                     IconButton(
+                        enabled = !hasPendingCard,
                         onClick = {
                             val text = input.trim()
                             if (text.isEmpty()) return@IconButton
@@ -191,7 +209,7 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun TimelineRow(item: TimelineItem) {
+private fun TimelineRow(item: TimelineItem, onAnswer: (String, String, JSONObject) -> Unit) {
     when (item) {
         is TimelineItem.Text -> Bubble(item.text, item.fromUser)
         is TimelineItem.Thinking -> Text(
@@ -206,14 +224,15 @@ private fun TimelineRow(item: TimelineItem) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
         )
+        is TimelineItem.Card -> CardRow(item, onAnswer)
         is TimelineItem.Error -> Text(
             item.message,
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
         )
-        // 卡片 / 交付物：P3 / P4 接入
-        is TimelineItem.Card, is TimelineItem.Deliverable -> Unit
+        // 交付物：P4 接入
+        is TimelineItem.Deliverable -> Unit
     }
 }
 

@@ -26,13 +26,17 @@ data class SessionMeta(
     val archived: Boolean
 )
 
+/** 回填条目里的未决交互卡（服务端只回填 ask / plan 两种；mount 不入历史）。 */
+data class BackfillCard(val kind: String, val key: String, val questions: List<AskQuestion>, val plan: String)
+
 /** /api/sessions/:id/messages 的回填条目（服务端 projectMessages 的投影，见 channel-server/server.ts）。 */
 data class BackfillMsg(
     val i: Int,
     val role: String,
     val text: String?,
     val tools: List<String>,
-    val attachments: Int
+    val attachments: Int,
+    val card: BackfillCard? = null
 )
 
 data class Backfill(val total: Int, val start: Int, val messages: List<BackfillMsg>)
@@ -129,12 +133,21 @@ class DevaClient(
                     val tools = mutableListOf<String>()
                     val tarr = m.optJSONArray("tools")
                     if (tarr != null) for (j in 0 until tarr.length()) tools.add(tarr.optString(j))
+                    val card = m.optJSONObject("card")?.let { c ->
+                        BackfillCard(
+                            kind = c.optString("kind"),
+                            key = c.optString("key"),
+                            questions = parseQuestions(c.optJSONArray("questions")),
+                            plan = c.optString("plan")
+                        )
+                    }
                     BackfillMsg(
                         i = m.optInt("i"),
                         role = m.optString("role"),
                         text = m.optString("text").takeIf { it.isNotEmpty() },
                         tools = tools,
-                        attachments = m.optInt("attachments", 0)
+                        attachments = m.optInt("attachments", 0),
+                        card = card
                     )
                 }
                 ApiResult.Ok(Backfill(total = o.optInt("total"), start = o.optInt("start"), messages = list))
@@ -160,6 +173,19 @@ class DevaClient(
             is ApiResult.Ok -> ApiResult.Ok(Unit)
             is ApiResult.Err -> r
         }
+
+    /**
+     * 交互卡作答（设计 §3.3）：kind = ask / plan / mount，payload 形状随 kind
+     * （ask: {answers: string[]|null}；plan: {decision, feedback?}；mount: {path: string|null}）。
+     * 服务端 409（卡已结束/不存在）走 Err 返回。
+     */
+    suspend fun answer(sessionId: String, key: String, kind: String, payload: JSONObject): ApiResult<Unit> {
+        val body = JSONObject().put("key", key).put("kind", kind).put("payload", payload)
+        return when (val r = request("POST", "/api/sessions/${enc(sessionId)}/answer", body)) {
+            is ApiResult.Ok -> ApiResult.Ok(Unit)
+            is ApiResult.Err -> r
+        }
+    }
 
     // ── 内部 ──
 

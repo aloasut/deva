@@ -2,8 +2,9 @@ import { randomBytes, randomInt } from 'node:crypto'
 import { hostname } from 'node:os'
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { app } from 'electron'
-import { getChatRuntime } from '../chat'
+import { getChatRuntime, parseAskQuestions } from '../chat'
 import { ensureSession, getSession, listSessions, save as saveProject } from '../chat-store'
+import type { StoredSession } from '../chat-store'
 import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from '../model-resolve'
 import { getPersona } from '../personas'
 import { setSecret } from '../secrets'
@@ -72,19 +73,30 @@ interface BackfillItem {
   tools?: string[]
   /** 图片 / 文档附件个数（正文之外的内容块）。 */
   attachments?: number
+  /**
+   * 未决交互卡（ask_user / exit_plan）：仅当边车（asks / plans）无该 toolUseId 终态时才回填——
+   * 已答过的卡手机端按普通工具行折叠。挂载请求卡不入历史（权限闸门内存产物，见设计 §3.3）。
+   */
+  card?: { kind: 'ask'; key: string; questions: ReturnType<typeof parseAskQuestions> } | {
+    kind: 'plan'
+    key: string
+    plan: string
+  }
 }
 
 /**
  * 把主进程的 Message[]（模型上下文真源）投影成手机端可显示的线性列表：
  * 正文取 text 块；assistant 的 tool_use 折叠成工具名；user 消息里的 tool_result（provider 约定）
  * 不是人话，跳过；图片/文档只报个数（v1 不回填正文附件）。i 为投影后序号，供分页定位。
+ * 未决交互卡判定只读边车终态（asks/plans），不在通道里复制「循环暂停」语义。
  */
-function projectMessages(messages: Message[]): BackfillItem[] {
+function projectMessages(messages: Message[], session: StoredSession): BackfillItem[] {
   const out: BackfillItem[] = []
   for (const m of messages) {
     const texts: string[] = []
     const tools: string[] = []
     let attachments = 0
+    let card: BackfillItem['card']
     if (typeof m.content === 'string') {
       if (m.content.trim()) texts.push(m.content)
     } else {
@@ -93,19 +105,32 @@ function projectMessages(messages: Message[]): BackfillItem[] {
           if (p.text.trim()) texts.push(p.text)
         } else if (p.type === 'tool_use') {
           tools.push(p.name)
+          if (m.role === 'assistant' && !card) {
+            // 一对话同时最多一张未决卡（交互工具会暂停循环）；终态在边车的不再当未决回填
+            if (p.name === 'ask_user' && session.asks?.[p.id] === undefined)
+              card = { kind: 'ask', key: p.id, questions: parseAskQuestions(p.input) }
+            else if (p.name === 'exit_plan' && session.plans?.[p.id] === undefined) {
+              const plan =
+                typeof (p.input as { plan?: unknown })?.plan === 'string'
+                  ? (p.input as { plan: string }).plan
+                  : ''
+              if (plan.trim()) card = { kind: 'plan', key: p.id, plan }
+            }
+          }
         } else if (p.type === 'image' || p.type === 'document') {
           attachments++
         }
         // tool_result：工具输出，桌面端折叠展示，v1 手机端不回填
       }
     }
-    if (texts.length || tools.length || attachments)
+    if (texts.length || tools.length || attachments || card)
       out.push({
         i: out.length,
         role: m.role,
         ...(texts.length ? { text: texts.join('\n\n') } : {}),
         ...(tools.length ? { tools } : {}),
-        ...(attachments ? { attachments } : {})
+        ...(attachments ? { attachments } : {}),
+        ...(card ? { card } : {})
       })
   }
   return out
@@ -229,6 +254,43 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       }
     }
 
+    // POST /api/sessions/:id/answer：交互卡作答（转调 answerAsk / decidePlan / answerMount，设计 §3.3）。
+    // 卡键 = 交互工具的 toolUseId；ok=false（卡已结束/不存在）回 409，让手机端把卡收成已决态。
+    // mount 的 path 手机端给不出可信目录（系统对话框在桌面），与远程通道同口径只传 null（暂不挂载）。
+    const mAns = url.pathname.match(/^\/api\/sessions\/([^/]+)\/answer$/)
+    if (mAns && method === 'POST') {
+      const rt = getChatRuntime()
+      if (!rt) return json(res, 503, { error: 'Deva 还没准备好，请稍后再试。' })
+      if (!getSession(decodeURIComponent(mAns[1]))) return json(res, 404, { error: '会话不存在。' })
+      const body = await readJson<{ key?: unknown; kind?: unknown; payload?: unknown }>(req)
+      const key = typeof body?.key === 'string' ? body.key.trim() : ''
+      if (!key) return json(res, 400, { error: '缺少卡片键（key）。' })
+      const payload = (body?.payload ?? {}) as Record<string, unknown>
+      if (body?.kind === 'ask') {
+        const raw = Array.isArray(payload.answers) ? payload.answers : null
+        // answers: 逐题字符串数组（与 questions 对齐）；null = 取消/中止（AskResponse 语义原样透传）
+        const answers =
+          raw === null ? null : raw.map((a) => (typeof a === 'string' ? a : String(a ?? '')))
+        if (!rt.answerAsk({ key, answers })) return json(res, 409, { error: '这张问答卡已结束或不存在。' })
+        return json(res, 200, { ok: true })
+      }
+      if (body?.kind === 'plan') {
+        const decision = payload.decision
+        if (decision !== 'approve' && decision !== 'keep' && decision !== 'ignore')
+          return json(res, 400, { error: 'decision 必须是 approve / keep / ignore。' })
+        const feedback = typeof payload.feedback === 'string' ? payload.feedback : undefined
+        if (!rt.decidePlan({ key, decision, ...(feedback !== undefined ? { feedback } : {}) }))
+          return json(res, 409, { error: '这张计划卡已结束或不存在。' })
+        return json(res, 200, { ok: true })
+      }
+      if (body?.kind === 'mount') {
+        const path = typeof payload.path === 'string' && payload.path.trim() ? payload.path.trim() : null
+        if (!rt.answerMount({ key, path })) return json(res, 409, { error: '这张挂载卡已结束或不存在。' })
+        return json(res, 200, { ok: true })
+      }
+      return json(res, 400, { error: 'kind 必须是 ask / plan / mount。' })
+    }
+
     // POST /api/turns/:turnId/abort：停止回合（转调 chatRuntime.abort；未知 turnId 为 no-op，照常 ok）
     const mAbort = url.pathname.match(/^\/api\/turns\/([A-Za-z0-9_-]+)\/abort$/)
     if (mAbort && method === 'POST') {
@@ -243,7 +305,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (mMsg && method === 'GET') {
       const session = getSession(decodeURIComponent(mMsg[1]))
       if (!session) return json(res, 404, { error: '会话不存在。' })
-      const items = projectMessages(session.messages)
+      const items = projectMessages(session.messages, session)
       const total = items.length
       const qLimit = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
       const limit = Number.isFinite(qLimit) ? Math.min(Math.max(qLimit, 1), 2000) : 400
