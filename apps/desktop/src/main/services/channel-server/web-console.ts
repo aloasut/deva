@@ -109,6 +109,7 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   </main>
   <div class="composer hidden" id="composer">
     <input type="text" id="cInput" placeholder="发消息…" autocomplete="off">
+    <button id="cStop" class="stop hidden">停止</button>
     <button id="cSend">发送</button>
   </div>
 </div>
@@ -118,6 +119,8 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   var TOKEN_KEY = 'deva.web.token'
   var state = { token: localStorage.getItem(TOKEN_KEY) || '', view: 'pair', sessions: [], sid: null,
     sseAbort: null, lastEventId: 0, activeTurn: null, bubbleByTurn: {}, toolById: {}, cards: {}, unknown: 0, pollTimer: null }
+  // 诊断探针：wedge 排查用（SSE 帧到达时刻/计数、重连次数、最近的 fetch 异常）
+  window.__wb = { lastFrameAt: 0, frameCount: 0, sseReconnects: 0, sseClosed: 0, lastFetchError: '', frameErrors: [] }
 
   function $(s) { return document.querySelector(s) }
   function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e }
@@ -140,7 +143,7 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   function timedFetch(path, opts, budget, retried) {
     var ctl = new AbortController()
     var timer = setTimeout(function () { ctl.abort() }, budget)
-    var p = fetch(path, Object.assign({}, opts, { signal: ctl.signal })).then(function (r) { clearTimeout(timer); return r })
+    var p = fetch(path, Object.assign({}, opts, { signal: ctl.signal })).then(function (r) { clearTimeout(timer); return r }).catch(function (e) { window.__wb.lastFetchError = path + ': ' + (e.name || e); throw e })
     var mayRetry = !!opts.retryOnce || !opts.method || opts.method === 'GET'
     if (retried || !mayRetry) return p
     return p.catch(function (e) {
@@ -345,6 +348,8 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   }
 
   function handleFrame(d) {
+    window.__wb.lastFrameAt = Date.now()
+    window.__wb.frameCount++
     var tl = $('#timeline')
     if (d.type === 'turn_start') {
       var u = d.user || {}
@@ -367,6 +372,11 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
       renderPlan(d.key, d.plan, false)
     } else if (d.type === 'mount_request') {
       renderMount(d.key, d.tool, d.path, d.member)
+    } else if (d.type === 'replay_reset') {
+      // 协议恢复语义：Last-Event-ID 早于缓冲最老一帧时服务端发本帧并关闭连接，要求客户端
+      // 重新拉 /messages 整体回填、且不再带旧 id 续传（否则服务端会再次 reset+关闭，死循环）
+      state.lastEventId = 0
+      backfill()
     } else if (d.type === 'interaction_resolved') {
       markResolved(d.key, '\\u2713 已处理')
     } else if (d.type === 'done') {
@@ -380,9 +390,13 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   }
 
   function setStopMode(busy) {
-    var b = $('#cSend')
-    b.textContent = busy ? '停止' : '发送'
-    b.classList.toggle('stop', !!busy)
+    var b = $('#cStop')
+    if (busy) b.classList.remove('hidden')
+    else b.classList.add('hidden')
+  }
+
+  function stopTurn() {
+    if (state.activeTurn) api('/api/turns/' + state.activeTurn + '/abort', { method: 'POST' }).catch(function () {})
   }
 
   function sseLoop() {
@@ -397,7 +411,7 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
       function pump() {
         return reader.read().then(function (chunk) {
           if (chunk.done) throw new Error('stream end')
-          buf += dec.decode(chunk, { stream: true })
+          buf += dec.decode(chunk.value, { stream: true })
           var idx
           while ((idx = buf.indexOf('\\n\\n')) >= 0) {
             var block = buf.slice(0, idx); buf = buf.slice(idx + 2)
@@ -415,6 +429,9 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
     }).catch(function (e) {
       if (ctl.signal.aborted) return
       if (state.sid !== sid) return
+      window.__wb.sseClosed++
+      window.__wb.sseReconnects++
+      window.__wb.lastFetchError = String(e && e.message || e)
       return new Promise(function (res) { setTimeout(res, 3000) }).then(function () {
         if (state.sid !== sid) return
         return backfill().then(sseLoop)
@@ -425,10 +442,11 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   function stopSse() { if (state.sseAbort) { state.sseAbort.abort(); state.sseAbort = null } }
 
   function send() {
-    var b = $('#cSend')
-    if (state.activeTurn) { api('/api/turns/' + state.activeTurn + '/abort', { method: 'POST' }); return }
+    // 发送永远发消息：回合忙时服务端 busy→insert 回退（与桌面/IM 同语义）；
+    // 停止是独立按钮（卡片待答时回合挂着 activeTurn，若把发送兼做停止会误中止回合）
     var inp = $('#cInput'); var text = inp.value.trim()
     if (!text || !state.sid) return
+    var b = $('#cSend')
     b.disabled = true
     api('/api/sessions/' + state.sid + '/send', { method: 'POST', body: { text: text } }).then(function (r) {
       b.disabled = false
@@ -474,7 +492,8 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
   $('#btnLogout').onclick = function () { logout('已退出配对。') }
   $('#btnBack').onclick = function () { state.sid = null; stopSse(); showList() }
   $('#cSend').onclick = send
-  $('#cInput').addEventListener('keydown', function (e) { if (e.key === 'Enter' && !state.activeTurn) send() })
+  $('#cStop').onclick = stopTurn
+  $('#cInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') send() })
 
   boot()
 })()
