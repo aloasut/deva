@@ -73,6 +73,9 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 - 首次启用时生成一次性**配对码**（6 位数字，5 分钟有效），在桌面「机器人」面板的「通用设备」入口显示（列表置顶行 + 右侧详情，「+」菜单也提供通用设备项直达配对码），并附二维码（内容：`deva://pair?host=<host>&port=<port>&code=<code>`）。
 - **设备名全局唯一**：配对时若设备名（去首尾空格、不分大小写）与已配对设备重名，配对拒绝（409），设备端需换名重试。
 - **配对码一次性原子消费**：校验与作废在同一步同步完成（`consumePairCodeIfMatch`），并发同码配对有且只有一个成功——杜绝「校验→异步落密钥→作废」窗口期的双重接入竞态。
+- **设备名全局唯一**：重名（NFKC 不分大小写）配对拒绝 409 且**不烧一次性码**——同码换名可重试
+- **Origin 纵深校验**：带 Origin 头的请求必须来自本机/本机 LAN 地址——阻断浏览器里恶意页面对本通道的跨站调用（CSRF/DNS rebinding）；手机 App 不发 Origin 不受影响
+- **单设备启停**：`GeneralDevice.enabled=false` 即鉴权短路（该设备请求一律 401），桌面面板可随时停用/恢复
 - 手机 `POST /api/pair { code, deviceName, devicePubKey }` → 返回 `{ deviceId, token }`；token 为随机 32 字节，落盘 `secrets.json`，键 `general:<deviceId>:token`（沿用现有 secrets 约定，**不复用 `remote:<botId>:*`**）。
 - 之后所有请求带 `Authorization: Bearer <token>`；token 可在桌面端吊销（`DELETE /api/devices/:id`）。
 - 失败限速：同 IP 每分钟 10 次配对尝试，超限 429。
@@ -84,10 +87,13 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 |---|---|---|
 | POST | `/api/pair` | 配对（唯一免鉴权接口） |
 | GET | `/api/info` | 版本、主机名、平台、是否首次运行 ；带 `protocol`（协议版本号）与 `capabilities` 数组 |
-| GET | `/api/sessions` | 会话列表（id/title/personaId/updatedAt/busy/archived） |
+| GET | `/api/sessions` | 会话列表（同上；可选 `?limit=` 前缀截断）。**成员会话(parentId)不进列表**(与 hub 同口径) |
 | POST | `/api/sessions` | 新建会话（可选 personaId / workspaceRoot） |
 | GET | `/api/sessions/:id` | 单个会话元信息 + 待送达插入消息 |
 | POST | `/api/sessions/:id/send` | 发消息（`text`, `attachments[]`, `modelRef?`, `effort?`） |
+| GET | `/api/sessions/:id` | 单会话元信息（title/personaId/busy/archived；pendingInserts v1 恒空——插入走 send 忙时回退） |
+| POST | `/api/sessions/:id/send`（会话忙时） | 忙 → 回退为**插入进行中的任务**（与 hub/IM 同口径），响应 `{inserted:true}`；否则 `{turnId}` |
+| IPC `general:set-device-enabled` | 单设备启停（协议外，桌面 IPC）：false 即该设备请求一律 401 |
 | POST | `/api/sessions/:id/answer` | 交互作答（`key`, `kind: ask/plan/mount`, `payload`） |
 | POST | `/api/turns/:turnId/abort` | 停止回合 |
 | GET | `/api/turns/:turnId/events?lastEventId=N` | SSE 事件流（支持 `Last-Event-ID` 续传） |
@@ -116,6 +122,7 @@ data: {"sessionId":"...","turnId":"...","type":"text_delta","text":"..."}
 - 每帧 `id` 单调递增，存在进程内环形缓冲（默认 2000 条/会话）；客户端带 `Last-Event-ID` 可补发增量，超出缓冲则返回 `replay_reset`，客户端重新拉 `/messages`。
 - **设备端最小映射集**（安卓 App）：text_delta / thinking_delta / tool_call / tool_result / turn_start / ask_user / plan_review / mount_request / interaction_resolved / stream_reset（丢本步残缺尾）/ done / error / insert / auto_retry / todos / usage；`card_resolved`、`member_*`、`compacted` 等设备端无对应 UI 的事件保持忽略并计数。
 - **会话级订阅**（通用设备）：`/api/sessions/:id/events` 投递该会话全部回合的 chat 帧与 notice；`turn_start` 自带 turnId 供设备发现新回合（验收线 4），`done` 清活动标记。
+- **SSE 连接治理**：全局 ≤64、每设备 ≤4 连接（超限 429）；心跳与帧写均带写背压（>8MB 踢除停滞连接）；单会话 ring 双上限（2000 帧/5MB 字节）+ >64KB 帧入环降级占位；会话删除即回收对应 ring（`onSessionPurge`）。
 - **不新增事件形状**：v1 直接把 `ChatStreamEvent` 的类型（`text_delta` / `thinking_delta` / `tool_call` / `tool_result` / `ask_user` / `plan_review` / `mount_request` / `todos` / `usage` / `reconnecting` / `stream_reset` / `auto_retry` / `error` / `compacted` / `compacting` / `interaction_resolved` / `card_resolved` / `turn_start` / `insert` / `inserts` / `inserts_returned` / `done` / `member_report` / `member_progress`）直接映射为 App 内的 sealed class，未知类型一律忽略并计数（便于后续版本兼容）。
 
 ### 3.5 生命周期
@@ -124,6 +131,10 @@ data: {"sessionId":"...","turnId":"...","type":"text_delta","text":"..."}
 - 状态纳入 `ChannelState` 同形的状态机（`off / connecting / connected / error`），桌面「机器人」面板的「安卓设备」详情显示通道状态、监听地址与已配对设备（配对时间 + 吊销）。
 - **per-device 管理**：通用设备支持 通道启停（全局开关）+ **单设备启停（enabled）与改名**（吊销之外的两条常规动作）；回复范围（scope）字段在协议中预留、v1 恒为「全部非成员会话」——第二个客户端接入前若需收窄，作为破坏性变更另行设计。配对成功时桌面弹提醒。
 - 崩溃/异常不得影响聊天主流程：通道内部所有错误只上报状态，不抛给 chatRuntime。
+
+### 实现超出设计的记录（防文档腐化，2026-11-12）
+
+- 设备在线态 online/lastSeenAt（§3.5 已回写）；会话列表过滤成员会话（与 hub 同口径）；发送模型解析链已抽 `model-resolve.resolveModelRefForSend` 供 hub 与通道同源；单设备 enabled 与改名；稳健性自加：错误契约（401→重新配对终态/403 白名单/409 忙）、FileSaver API 分档回落、SecureStore KeyStore 损坏自愈、图片预览 25MB cap+LruCache+EXIF、明文提示双落点。
 
 ## 4. 安卓端结构
 
