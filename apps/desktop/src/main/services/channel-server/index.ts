@@ -7,6 +7,7 @@ import { getAndroidServerConfig, patchAndroidServer, removeDevice } from './conf
 import { cancelPairCode, issuePairCode, lanHost } from './pairing'
 import { startServer, stopServer } from './server'
 import { startEventStream, stopEventStream } from './sse'
+import { deviceActivity } from './activity'
 
 /**
  * 安卓客户端的入站通道（设计 §3）：把已存在的 chatRuntime / chat-bus 暴露给已配对设备。
@@ -19,6 +20,9 @@ export interface AndroidDeviceView {
   id: string
   name: string
   pairedAt: number
+  /** 进程内活动态（activity.ts）：有存活的 SSE 连接 / 最近一次带鉴权请求时间。 */
+  online: boolean
+  lastSeenAt: number
 }
 
 export interface AndroidServerView {
@@ -49,7 +53,12 @@ export function getChannelServerState(): AndroidServerView {
     port: cfg.port,
     state,
     ...(stateError ? { error: stateError } : {}),
-    devices: cfg.devices.map((d) => ({ id: d.id, name: d.name, pairedAt: d.pairedAt }))
+    devices: cfg.devices.map((d) => ({
+      id: d.id,
+      name: d.name,
+      pairedAt: d.pairedAt,
+      ...deviceActivity(d.id)
+    }))
   }
 }
 

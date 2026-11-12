@@ -114,7 +114,11 @@ export function BotsPane(): React.JSX.Element {
               <div className="bots-row__meta">
                 <span className={`bots-dot bots-dot--${android?.state ?? 'off'}`} />
                 {t(`bots.state.${android?.state ?? 'off'}`)}
-                {android && <span className="bots-tag">{android.devices.length}</span>}
+                {android && (
+                  <span className="bots-tag">
+                    {android.devices.filter((d) => d.online).length}/{android.devices.length}
+                  </span>
+                )}
               </div>
             </div>
           </button>
@@ -996,7 +1000,13 @@ function AndroidDetail(): React.JSX.Element {
           st.devices.map((d) => (
             <div key={d.id} className="bots-user">
               <span className="bots-user__id">{d.name || d.id}</span>
+              {d.online && <span className="bots-tag">{t('bots.android.online')}</span>}
               <span className="bots-user__at">{new Date(d.pairedAt).toLocaleString()}</span>
+              {d.lastSeenAt > 0 && (
+                <span className="bots-user__at">
+                  {t('bots.android.lastSeen').replace('{t}', new Date(d.lastSeenAt).toLocaleString())}
+                </span>
+              )}
               <button className="ext-linkbtn" onClick={() => void revoke(d.id, d.name)}>
                 {t('bots.android.revoke')}
               </button>

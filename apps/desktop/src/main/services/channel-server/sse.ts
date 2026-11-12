@@ -1,5 +1,6 @@
 import type { ServerResponse } from 'node:http'
 import { onAppNotice, onChatEvent, type AppNotice } from '../chat-bus'
+import { noteDeviceStream } from './activity'
 
 /**
  * SSE 事件流（设计 §3.4）：channel-server 对 chat-bus 的唯一订阅在这里，
@@ -30,6 +31,8 @@ interface Frame {
 interface Connection {
   res: ServerResponse
   turnId: string
+  /** 发起连接的设备（鉴权时解析）；关闭时据此清除在线态。 */
+  deviceId?: string
   /** 首个本回合事件到达后锁定其会话；会话级事件只投给已锁定会话的连接。 */
   sessionId?: string
   heartbeat: ReturnType<typeof setInterval>
@@ -115,7 +118,7 @@ export function startEventStream(): void {
  * replay_reset 语义（设计 §3.4）：Last-Event-ID 早于缓冲最老一帧（超出缓冲）或来自上一进程
  * （计数器已重置）时，发一帧 notice 让客户端重新拉 /messages。
  */
-export function openTurnStream(res: ServerResponse, turnId: string, lastEventId: number): void {
+export function openTurnStream(res: ServerResponse, turnId: string, lastEventId: number, deviceId?: string): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream',
     'cache-control': 'no-cache',
@@ -127,6 +130,7 @@ export function openTurnStream(res: ServerResponse, turnId: string, lastEventId:
   const conn: Connection = {
     res,
     turnId,
+    deviceId,
     heartbeat: setInterval(() => {
       if (!res.destroyed && !res.writableEnded) res.write(': ping\n\n')
     }, HEARTBEAT_MS)
@@ -155,6 +159,7 @@ export function openTurnStream(res: ServerResponse, turnId: string, lastEventId:
   res.on('close', () => {
     clearInterval(conn.heartbeat)
     connections.delete(conn)
+    if (conn.deviceId) noteDeviceStream(conn.deviceId, false)
   })
 }
 

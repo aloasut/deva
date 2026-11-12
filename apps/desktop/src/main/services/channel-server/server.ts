@@ -14,6 +14,7 @@ import type { Message } from '../../providers/types'
 import { isEffortLevel } from '../../../shared/effort'
 import type { ChannelState } from '../remote/types'
 import { deviceIdForToken, invalidateTokenCache } from './auth'
+import { noteDeviceSeen, noteDeviceStream } from './activity'
 import { addDevice, type AndroidServerConfig } from './config'
 import { consumePairCode, pairAttemptAllowed, verifyPairCode } from './pairing'
 import { openTurnStream } from './sse'
@@ -258,6 +259,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
     const deviceId = await deviceIdForToken(token)
     if (!deviceId) return json(res, 401, { error: '未配对或凭据无效。' })
+    noteDeviceSeen(deviceId)
 
     // GET /api/info：版本、主机名、平台、是否首次运行（首次运行 = 还没有任何会话）
     if (method === 'GET' && url.pathname === '/api/info')
@@ -442,7 +444,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const h = req.headers['last-event-id']
       const raw = Array.isArray(h) ? h[0] : h
       const parsed = Number.parseInt(raw ?? '', 10)
-      openTurnStream(res, m[1], Number.isFinite(parsed) ? parsed : 0)
+      noteDeviceStream(deviceId, true)
+      openTurnStream(res, m[1], Number.isFinite(parsed) ? parsed : 0, deviceId)
       return
     }
 

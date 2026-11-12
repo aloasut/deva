@@ -913,7 +913,7 @@ export interface AndroidServerView {
   port: number
   state: 'off' | 'connecting' | 'connected' | 'error'
   error?: string
-  devices: AndroidDevice[]
+  devices: (AndroidDevice & { online: boolean; lastSeenAt: number })[]
 }
 
 export interface ChatEventPayload {
