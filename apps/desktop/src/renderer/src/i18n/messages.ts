@@ -765,6 +765,10 @@ const zhCN: MessageTree = {
       revoke: '吊销',
       revokeConfirm: '吊销「{name}」？该设备保存的凭据将一并清除，之后它的请求一律被拒绝。',
       listen: '监听 {host}:{port}',
+      hostMode: '监听范围',
+      hostModeHint: '仅本机 = 只有这台电脑能连；局域网 = 同网段的手机可连（切换后立即重启监听）',
+      lan: '局域网',
+      localOnly: '仅本机',
       plain:
         '安全提示：安卓通道为局域网 HTTP 明文传输，仅建议在可信网络（家庭 / 自己的路由器）下使用；配对后的设备可以让 Deva 在这台电脑上读写文件、运行命令，权限与你在电脑上使用时一样。'
     }
@@ -2217,6 +2221,10 @@ const en: MessageTree = {
       revoke: 'Revoke',
       revokeConfirm: 'Revoke "{name}"? Its stored credentials will be removed and all further requests from it will be rejected.',
       listen: 'Listening on {host}:{port}',
+      hostMode: 'Listen scope',
+      hostModeHint: 'Local only = only this computer can connect; LAN = any device on the same network (the listener restarts immediately on switch)',
+      lan: 'LAN',
+      localOnly: 'Local only',
       plain:
         'Security note: the Android channel uses plaintext HTTP on the LAN — use it only on trusted networks (home / your own router). A paired device can make Deva read and write files and run commands on this computer, with the same permissions you have here.'
     }

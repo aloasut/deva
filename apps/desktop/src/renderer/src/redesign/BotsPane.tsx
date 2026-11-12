@@ -39,9 +39,11 @@ export function BotsPane(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [android, setAndroid] = useState<AndroidView | null>(null)
 
-  // 安卓入站通道状态（channel-server）；设备增删后 reload
+  // 安卓入站通道状态（channel-server）：5s 轮询，手机配对后列表角标与状态自动更新
   useEffect(() => {
     void window.deva.android.getState().then(setAndroid)
+    const id = window.setInterval(() => void window.deva.android.getState().then(setAndroid), 5000)
+    return () => window.clearInterval(id)
   }, [])
 
   useEffect(() => {
@@ -957,6 +959,30 @@ function AndroidDetail(): React.JSX.Element {
             </div>
           </div>
         )}
+      </div>
+
+      <div className="bots-card">
+        <div className="bots-card__row">
+          <div className="bots-card__label">
+            {t('bots.android.hostMode')}
+            <span className="bots-card__hint">{t('bots.android.hostModeHint')}</span>
+          </div>
+          <div className="cf-seg">
+            {(['0.0.0.0', '127.0.0.1'] as const).map((h) => (
+              <button
+                key={h}
+                className={`cf-seg__opt${st?.host === h ? ' is-on' : ''}`}
+                onClick={() => {
+                  void window.deva.android.setHost(h)
+                  // 立即反馈：重启监听约一两秒，5s 轮询会把真实状态带回来
+                  setSt((s0) => (s0 ? { ...s0, host: h, state: s0.state === 'connected' ? 'connecting' : s0.state } : s0))
+                }}
+              >
+                {t(h === '0.0.0.0' ? 'bots.android.lan' : 'bots.android.localOnly')}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       <div className="bots-card">

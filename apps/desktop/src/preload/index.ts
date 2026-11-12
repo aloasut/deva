@@ -1514,7 +1514,9 @@ const api = {
     > => ipcRenderer.invoke('android:pair-code'),
     pairCancel: (): Promise<{ ok: true }> => ipcRenderer.invoke('android:pair-cancel'),
     /** 吊销已配对设备（删配置与密钥，此后其请求一律 401）。 */
-    removeDevice: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('android:remove-device', id)
+    removeDevice: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('android:remove-device', id),
+    /** 仅本机开关（设计 §3.1）：host 只认 '127.0.0.1' / '0.0.0.0'，改完立即重启监听。 */
+    setHost: (host: '127.0.0.1' | '0.0.0.0'): Promise<{ ok: true }> => ipcRenderer.invoke('android:set-host', host)
   }
 }
 

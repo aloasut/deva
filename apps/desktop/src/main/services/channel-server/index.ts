@@ -3,7 +3,7 @@ import QRCode from 'qrcode'
 import type { ChannelState } from '../remote/types'
 import { deleteSecretsByPrefix } from '../secrets'
 import { invalidateTokenCache } from './auth'
-import { getAndroidServerConfig, removeDevice } from './config'
+import { getAndroidServerConfig, patchAndroidServer, removeDevice } from './config'
 import { cancelPairCode, issuePairCode, lanHost } from './pairing'
 import { startServer, stopServer } from './server'
 import { startEventStream, stopEventStream } from './sse'
@@ -121,6 +121,15 @@ export function registerChannelServerIpc(): void {
     removeDevice(id)
     await deleteSecretsByPrefix(`android:${id}:`)
     invalidateTokenCache()
+    return { ok: true }
+  })
+
+  // 「仅本机」开关（设计 §3.1）：host 只认 127.0.0.1 / 0.0.0.0 两档；改完重启监听，状态经轮询可见
+  ipcMain.handle('android:set-host', (_e, host: string): { ok: true } => {
+    patchAndroidServer({ host: host === '127.0.0.1' ? '127.0.0.1' : '0.0.0.0' })
+    void stopChannelServer()
+      .then(() => startChannelServer())
+      .catch((e) => console.warn('[channel-server] 重启监听失败：', (e as Error)?.message ?? e))
     return { ok: true }
   })
 
