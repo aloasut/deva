@@ -89,7 +89,7 @@ data: {"sessionId":"…","turnId":"…","type":"text_delta","text":"OK，这就�
 
 | type | payload 要点 | 语义 / 设备端处理 |
 |---|---|---|
-| `turn_start` | `user: { role, text, attachments[] }` | 回合开始,`user.text` 是用户消息。**非本机发起的回合据此上屏用户气泡**(回合发现);本机发起的回合已在发送时乐观上屏,应按 turnId 去重 |
+| `turn_start` | `user: { role, text, attachments[], notify?, quiet? }` | 回合开始,`user.text` 是用户消息。**非本机发起的回合据此上屏用户气泡**(回合发现);本机发起的回合已在发送时乐观上屏,应按 turnId 去重。`notify=true` = 后台任务通知自动起的轮、`quiet=true` = 成员交差唤醒的轮——**两者都不是用户说的话,不上屏用户气泡**(与 `/messages` 回填的引擎标记过滤同口径;`text` 此时为通知标题);active/busy 态置位不受影响 |
 | `text_delta` | `text` | 追加助手正文(流式)。`stream_reset` 时丢弃本步已画的残缺尾,重收完整内容 |
 | `thinking_delta` | `text` | 追加思考流(可折叠展示) |
 | `tool_call` | `id`, `name` | 工具开始:折叠为一行「正在 name…」 |
