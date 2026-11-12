@@ -241,9 +241,13 @@ const zhCN: MessageTree = {
       truncated: '回复多次撞上输出长度上限或工具参数不完整，自动续写仍未完成，已停下。可发送「继续」，或让我把内容拆小、分段写入文件。',
       empty: '本轮模型没有返回任何内容。可换种说法重试或换个模型；若这轮对话已经很长，也可以新建对话或先压缩上下文。',
       refused: '模型拒绝了本次请求（或被服务商的内容策略拦截），本轮没有返回内容。换种说法或换个模型再试。',
-      compacted: '较早的对话已压缩为摘要',
+      compacted: '以上对话已压缩为摘要',
+      compactedFirst: '较早的对话已压缩为摘要',
+      compactedSteps: '此前 {n} 步已压缩为摘要',
+      compactedStepsNone: '此前的步骤已压缩为摘要',
       compactedShow: '查看摘要',
       compactedHide: '收起',
+      compactDone: '已压缩上下文。',
       compactNone: '当前对话较短，无需压缩。',
       compactFailed: '压缩失败，历史保持不变。',
       contextLimitLearned:
@@ -252,7 +256,9 @@ const zhCN: MessageTree = {
       restored: '已将代码回滚到较早的检查点，对话保留；下一条消息会告知模型这些文件已恢复。',
       aborted: '已停止本轮回复，以上为停止前已产出的内容。',
       stepLimit: '本次运行已达到步数上限（{n} 步），已停止调用工具并给出总结，任务可能未完成。',
-      repeated: '同一工具以相同参数连续调用 {n} 次且结果没有变化，已停止调用工具并给出总结。'
+      repeated: '同一工具以相同参数连续调用 {n} 次且结果没有变化，已停止调用工具并给出总结。',
+      degenerate:
+        '模型输出陷入逐字重复，重试后仍如此，已停止本轮回复并截掉重复部分。上下文过长常会导致这种情况，可压缩上下文或换个模型再试。'
     },
     noModel: '尚未选择模型，请先在「设置 › 模型」添加并启用模型，再从输入框上方的模型选择器中选择。',
     noKey: '该模型尚未配置 API 密钥，请在「设置 › 模型」中填写。',
@@ -319,7 +325,7 @@ const zhCN: MessageTree = {
       fallback: 'General',
       fork: '分身',
       stepUnit: '步',
-      // run_in_background：派发它的那轮不等它，结束后自动通知主智能体。
+      // 后台运行（默认）：派发它的那轮不等它，结束后自动通知主智能体。
       background: '后台',
       stop: '停止',
       stopHint: '停止这个后台子智能体（它停止前的输出会随下一条消息交给主智能体）',
@@ -337,7 +343,12 @@ const zhCN: MessageTree = {
       // 面板里还没有内部步骤（刚派出，或重新载入后步骤已不在）时，任务下面那一行的文字。
       working: '进行中',
       // 同时执行好几个工具时，当前步骤那行只写一个，后缀总数。
-      more: '等 {n} 项'
+      more: '等 {n} 项',
+      // 等汇总的进度（对话末尾居中，见 SubagentProgressNotice）：同一轮派出的几个后台子智能体已有完成、还有在跑的。
+      doneOne: '「{name}」已完成',
+      doneMany: '{n} 个子智能体已完成',
+      doneStatus: '已完成',
+      doneHint: '都完成后由 {owner} 汇总'
     },
     // 时间轴上每步一行：「动词 + 对象」。done=已完成，doing=执行中（扫光），base=失败时接「失败：原因」。
     flow: {
@@ -545,7 +556,9 @@ const zhCN: MessageTree = {
       autoEmpty: '上一步没有输出，正在自动重试',
       autoContext: '上下文超限，正在压缩后重试',
       autoOutputLimit: '输出上限不被模型接受，已降档重试',
-      autoEffort: '当前模型不支持所选思考等级，已按默认重发'
+      autoEffort: '当前模型不支持所选思考等级，已按默认重发',
+      autoRepetition: '模型输出陷入重复，已丢弃并重试',
+      autoOutputFit: '服务商预留的输出超出上下文窗口，已调小输出上限重发'
     },
     ask: {
       title: '请你决定',
@@ -1080,7 +1093,7 @@ const zhCN: MessageTree = {
     // 输入框「/ 指令」联想（技能项的说明取自各自 SKILL.md，不在此处）
     slash: {
       title: '指令',
-      compact: '压缩当前对话上下文，较早内容折叠为摘要',
+      compact: '压缩发给模型的上下文，对话记录不变',
       rewind: '回到之前的检查点，撤回代码和 / 或对话',
       hint: '↑↓ 选择 · Enter 采用 · Esc 关闭',
       mentionTitle: '请成员协助'
@@ -1337,6 +1350,8 @@ const zhCN: MessageTree = {
     select: '选择',
     selCancel: '取消',
     selectToDelete: '删除对话',
+    quote: '引用',
+    quoteRemove: '取消引用',
     deleteTurnsConfirm: '删除后所选轮次的消息将从对话与模型上下文中一并永久移除，无法恢复。',
     deletePersonaConfirm: '删除后该角色不可恢复，此操作无法撤销。',
     deletePersonaConfirmWithChats:
@@ -1402,10 +1417,12 @@ const zhCN: MessageTree = {
       arch: '拱门',
       scallop: '花边',
       burst: '星芒',
+      hexstar: '六角星',
       cloud: '云朵',
       diamond: '菱形',
       pebble: '鹅卵石',
       tilt: '斜方',
+      pentagon: '斜五边',
       leaf: '叶形',
       blob: '软团',
       pick: '拨片',
@@ -1709,9 +1726,13 @@ const en: MessageTree = {
         'The model returned nothing this turn. Try rephrasing or another model; if this chat has grown long, start a new one or compact the context first.',
       refused:
         'The model declined this request (or the provider blocked it by content policy), so nothing came back. Try rephrasing, or switch models.',
-      compacted: 'Earlier conversation compacted into a summary',
+      compacted: 'Conversation above compacted into a summary',
+      compactedFirst: 'Earlier conversation compacted into a summary',
+      compactedSteps: 'Previous {n} steps compacted into a summary',
+      compactedStepsNone: 'Earlier steps compacted into a summary',
       compactedShow: 'Show summary',
       compactedHide: 'Hide',
+      compactDone: 'Context compacted.',
       compactNone: 'This conversation is still short — nothing to compact.',
       compactFailed: 'Compaction failed; history is unchanged.',
       contextLimitLearned:
@@ -1724,7 +1745,9 @@ const en: MessageTree = {
       stepLimit:
         'This run reached the step limit ({n} steps). Tool calls stopped and a summary was given; the task may be unfinished.',
       repeated:
-        'The same tool was called {n} times in a row with identical arguments and results, so tool calls stopped and a summary was given.'
+        'The same tool was called {n} times in a row with identical arguments and results, so tool calls stopped and a summary was given.',
+      degenerate:
+        'The model kept repeating the same text verbatim, even after a retry, so the reply was stopped and the repeated part removed. Long context often causes this; try compacting or switching models.'
     },
     noModel:
       'No model selected — add and enable a model under Settings › Models, then pick it from the model selector above the input box.',
@@ -1799,7 +1822,11 @@ const en: MessageTree = {
       stopAll: 'Stop all',
       stopAllHint: 'Stop all background subagents (their output so far goes to the main agent with your next message)',
       working: 'Working',
-      more: '· {n} in parallel'
+      more: '· {n} in parallel',
+      doneOne: '{name} finished',
+      doneMany: '{n} subagents finished',
+      doneStatus: 'Finished',
+      doneHint: '{owner} will summarize once all are done'
     },
     flow: {
       done: {
@@ -2003,7 +2030,9 @@ const en: MessageTree = {
       autoEmpty: 'Previous step produced nothing, retrying automatically',
       autoContext: 'Context too long, compacting and retrying',
       autoOutputLimit: 'Output budget rejected by the model, retrying with a smaller one',
-      autoEffort: 'This model does not support the selected thinking level; resent with the default'
+      autoEffort: 'This model does not support the selected thinking level; resent with the default',
+      autoRepetition: 'Model output started repeating; discarded and retrying',
+      autoOutputFit: 'The provider’s output reservation exceeded the context window; resent with a smaller output limit'
     },
     ask: {
       title: 'Your call',
@@ -2546,7 +2575,7 @@ const en: MessageTree = {
     },
     slash: {
       title: 'Commands',
-      compact: 'Compact this conversation — fold earlier turns into a summary',
+      compact: 'Compact the context sent to the model; the conversation stays as is',
       rewind: 'Go back to an earlier checkpoint — undo code and/or conversation',
       hint: '↑↓ navigate · Enter accept · Esc dismiss',
       mentionTitle: 'Bring in a member'
@@ -2792,6 +2821,8 @@ const en: MessageTree = {
     select: 'Select',
     selCancel: 'Cancel',
     selectToDelete: 'Delete conversation',
+    quote: 'Quote',
+    quoteRemove: 'Remove quote',
     deleteTurnsConfirm:
       'The selected turns will be permanently removed from both the conversation and the model context. This cannot be undone.',
     deletePersonaConfirm:
@@ -2860,10 +2891,12 @@ const en: MessageTree = {
       arch: 'Arch',
       scallop: 'Scallop',
       burst: 'Burst',
+      hexstar: 'Six-point star',
       cloud: 'Cloud',
       diamond: 'Diamond',
       pebble: 'Pebble',
       tilt: 'Tilted square',
+      pentagon: 'Tilted pentagon',
       leaf: 'Leaf',
       blob: 'Blob',
       pick: 'Pick',

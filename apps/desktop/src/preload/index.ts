@@ -182,6 +182,8 @@ export interface MemberMeta {
   /** 负责的文件夹（绝对路径）；null = 没有文件夹（不跟随主对话）。以成员会话的 focusRoot 为准。 */
   root: string | null
   duty: string
+  /** 头像形状（主智能体建的成员创建时存下；@ 加入的与老成员没有）。 */
+  shape?: string
   addedAt: number
   removed?: boolean
   /** 最近一次派来的任务标题。 */
@@ -235,10 +237,13 @@ export type DisplayBlock =
   | { kind: 'tool'; id: string; name: string; args: unknown; status: 'ok' | 'error' | 'running'; summary?: string }
   | {
       kind: 'notice'
-      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated'
+      code: 'truncated' | 'empty' | 'refused' | 'restored' | 'aborted' | 'step_limit' | 'repeated' | 'degenerate'
     }
-  /** 较早历史已压缩：一行提示，摘要正文（已去掉写给模型的开头）默认折叠。 */
-  | { kind: 'compaction'; summary: string }
+  /**
+   * 压缩提示，摘要正文（已去掉写给模型的开头）默认折叠。steps 有值 = 一轮进行中压缩，是执行步骤里的节点；
+   * 否则是两轮之间的分隔提示（first = 前面没有消息）。
+   */
+  | { kind: 'compaction'; summary: string; steps?: number; first?: boolean }
   | { kind: 'error'; message: string }
   | { kind: 'agentcard'; id: string; draft: AgentDraft; status: 'pending' | 'accepted' | 'rejected' }
   /**
@@ -805,7 +810,7 @@ export type ChatStreamEvent =
   /** 引擎自愈中（截断续写 / 空回合追问 / 上下文压缩重试 / 输出预算降档），显示为状态横幅。 */
   | {
       type: 'auto_retry'
-      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort'
+      reason: 'truncated' | 'empty' | 'context' | 'output_limit' | 'effort' | 'repetition' | 'output_fit'
       attempt: number
       max: number
       /** context：报错里解析出的真实窗口；output_limit：用户所设输出上限被拒后降到的值。 */

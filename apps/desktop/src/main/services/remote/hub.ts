@@ -20,6 +20,7 @@ import { resolveDefaultEffort, resolveModelRefForSend } from '../model-resolve'
 import { previewSchedule } from '../tasks'
 import type { TaskCreateInput } from '../tasks-types'
 import { paginate } from './paginate'
+import { seededShape } from '../../../shared/avatar-shape'
 import { getChannelConfig, updateChannelConfig } from './store'
 import type {
   ActionResult,
@@ -391,7 +392,9 @@ const RETRY_TEXT: Record<string, string> = {
   empty: '上一步没有输出，正在追问',
   context: '上下文超限，压缩后重试',
   output_limit: '输出预算超限，降档重试',
-  effort: '模型不支持所选思考等级，按默认重试'
+  effort: '模型不支持所选思考等级，按默认重试',
+  repetition: '回复陷入重复，正在重试',
+  output_fit: '输出预留超出上下文窗口，已调小输出上限重发'
 }
 
 /** 把一个流事件并入回合视图。返回是否有可见变化。 */
@@ -521,7 +524,12 @@ function flushPost(t: TurnTrack, post: Post, adapter: RemoteAdapter): void {
 
 function finishTurn(t: TurnTrack, stopReason: string): void {
   t.finished = true
-  t.status = stopReason === 'aborted' ? 'aborted' : stopReason === 'error' ? 'error' : 'done'
+  t.status =
+    stopReason === 'aborted'
+      ? 'aborted'
+      : stopReason === 'error' || stopReason === 'degenerate'
+        ? 'error'
+        : 'done'
   t.statusText =
     stopReason === 'max_tokens'
       ? '回复达到长度上限被截断'
@@ -531,7 +539,9 @@ function finishTurn(t: TurnTrack, stopReason: string): void {
           ? '达到单次运行的步数上限，任务可能未完成'
           : stopReason === 'repeated'
             ? '相同的工具调用连续多次没有进展，已停止'
-            : undefined
+            : stopReason === 'degenerate'
+              ? '模型输出陷入逐字重复，重试后仍如此，已停止'
+              : undefined
   if (t.status === 'done' && !hasVisible(t) && t.eager) t.blocks.push({ kind: 'notice', text: '本轮没有产生回复。' })
   if (sessionTurn.get(t.sessionId) === t.turnId) sessionTurn.delete(t.sessionId)
   // 回合结束仍未决的交互卡：主进程已按取消解开，卡片收成「已结束」。
@@ -1236,13 +1246,14 @@ async function handleAction(a: InboundAction): Promise<ActionResult> {
       if (!raw) return { ok: false, message: '找不到这张名片对应的对话。' }
       if (getSession(v.sid)?.proposals?.[v.tool]) return { ok: false, message: '这张名片已经处理过了。' }
       if (v.a === 'accept') {
-        // 与桌面「接受」同：建角色并启用（头像由 id 确定性生成，之后可在电脑上改）。
-        // 新角色形状随机：'auto' 由渲染层 humation.tsx 按 id 挑形状（形状清单只在渲染层，主进程不解释）。
+        // 与桌面「接受」同：建角色并启用（头像部件与配色由 id 确定性生成，之后可在电脑上改）。
+        // 新角色形状此刻挑定并存成具体值，此后固定；按名字挑，与电脑上对话里的名片预览一致。
+        const name = str(raw.name) || '新角色'
         upsertPersona({
-          name: str(raw.name) || '新角色',
+          name,
           description: str(raw.description),
           prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
-          avatar: '{"shape":"auto"}',
+          avatar: JSON.stringify({ shape: seededShape(name) }),
           model: '',
           enabled: true
         })
