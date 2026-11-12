@@ -20,7 +20,7 @@ relations:
 | 端点 | 投递范围 | 设备端用途 |
 |---|---|---|
 | `GET /api/sessions/:id/events` | 该会话**全部回合**的 chat 帧 + 通知 | **主用**。进入会话即订阅,任意发起方(本机/桌面/定时任务)的回合实时可见 |
-| `GET /api/turns/:turnId/events` | 仅该回合的 chat 帧 | 兼容场景;设备端主流程不建议用 |
+| `GET /api/turns/:turnId/events` | 仅该回合的 chat 帧 | 兼容场景;设备端主流程不建议用。未知 turnId → `404`(turn_start 入环即登记,不再开流空等占配额) |
 
 两者均支持 `Last-Event-ID` 头续传、`retry:` 服务端建议、15 秒 `: ping` 心跳。
 

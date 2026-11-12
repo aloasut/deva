@@ -18,7 +18,7 @@ relations:
 
 约定:Base URL `http://<host>:4317`(默认);除 [POST /api/pair](#post-apipair-配对唯一免鉴权) 外全部需要 `Authorization: Bearer <token>`。请求与响应均为 JSON(UTF-8)。`POST` 请求体上限 64KB。
 
-携带 `Origin` 头的请求:Origin 的主机名必须是服务端本机地址(`127.0.0.1` / `localhost` / 本机任一 LAN IPv4),否则 `403`——浏览器跨站调用被拒;原生设备客户端不发 Origin,不受影响。
+携带 `Origin` 头的请求:Origin 的**主机名必须是服务端本机地址**(`127.0.0.1` / `localhost` / 本机任一 LAN IPv4)且**端口必须等于通道监听端口**(缺省端口按协议默认 80/443 折算)——本机其他端口上的服务可伪造同主机名 Origin,只比主机名拦不住;不符即 `403`。原生设备客户端不发 Origin,不受影响。
 
 ---
 
@@ -30,15 +30,17 @@ relations:
 | GET | `/api/info` | 版本/协议/能力 | Bearer |
 | GET | `/api/sessions` | 会话列表(`?limit=`) | Bearer |
 | POST | `/api/sessions` | 新建会话 | Bearer |
-| GET | `/api/sessions/:id` | 单会话元信息 | Bearer |
+| GET | `/api/sessions/:id` | 单会话元信息(query 忽略) | Bearer |
 | POST | `/api/sessions/:id/send` | 发消息(忙时回退插入) | Bearer |
 | POST | `/api/sessions/:id/answer` | 应答交互卡(问答/计划/挂载) | Bearer |
+| POST | `/api/sessions/:id/archive` | 归档 / 取消归档 | Bearer |
 | POST | `/api/turns/:turnId/abort` | 停止回合 | Bearer |
+| POST | `/api/devices/self` | 自助吊销本设备(凭 token 自证) | Bearer |
 | GET | `/api/sessions/:id/messages` | 历史回填(`?start=&limit=`) | Bearer |
 | GET | `/api/sessions/:id/deliveries?toolUseId=` | 一次交付的文件清单 | Bearer |
 | GET | `/api/files?path=&session=` | 下载交付文件(白名单) | Bearer |
 | GET | `/api/sessions/:id/events` | **会话级 SSE**(推荐) | Bearer |
-| GET | `/api/turns/:turnId/events` | 回合级 SSE | Bearer |
+| GET | `/api/turns/:turnId/events` | 回合级 SSE(未知 turnId → 404) | Bearer |
 
 ---
 
@@ -59,7 +61,7 @@ relations:
 
 ```json
 { "deviceId": "dev_mwd1accw_hdp0", "token": "<43 字符 base64url>", "protocol": 1,
-  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device"] }
+  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device","self-revoke","session-archive"] }
 ```
 
 **错误**:`400` 配对码缺失/不正确/已过期(码此时才作废,失败不烧码);`409` 设备重名(**码不烧**);`429` 超限(同 IP 10 次/分,或全局连续失败 20 次熔断——桌面重新出码即解除)。
@@ -73,8 +75,10 @@ relations:
 ```json
 { "version": "33.4.11", "hostname": "MacBookProM1.local", "platform": "darwin",
   "firstRun": false, "protocol": 1,
-  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device"] }
+  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device","self-revoke","session-archive"] }
 ```
+
+`firstRun` = 还没有任何**顶层会话**(成员会话/子智能体不计入,与 `/api/sessions` 列表同口径)。
 
 设备端应在启动时记录 `protocol` 与 `capabilities`;不满足所需能力时提示升级,而非猜测语义。
 
@@ -86,27 +90,29 @@ relations:
 
 ```json
 { "sessions": [ { "id": "sess_…", "title": "…", "personaId": "…|null",
+                  "personaName": "工程师|null(缺省)",
+                  "lastMessage": "最后一条可见消息摘要,≤120 字符|缺省=空会话",
                   "updatedAt": 1730000000000, "busy": false, "archived": false } ],
   "total": 21 }
 ```
 
-`busy=true` 表示该会话有正在运行的回合。
+`busy=true` 表示该会话有正在运行的回合。`personaName` 由服务端把 `personaId` 解析成角色展示名(未绑定或角色已删除时字段缺省)——设备端画角色徽标无需再调角色清单接口。`lastMessage` 与 `/messages` 投影同口径(正文 text 块,跳过纯工具轮)。
 
 ---
 
 ## POST /api/sessions
 
-新建空会话 → `{ "id": "sess_…" }`。标题由首轮消息自动派生。
+新建空会话 → `{ "id": "sess_…" }`。标题由首轮消息自动派生。设计上预留的 `personaId` / `workspaceRoot` 入参为 **v2**(v1 不收,建会话即默认角色/无聚焦工作区)。
 
 ---
 
 ## GET /api/sessions/:id
 
-单会话元信息:
+单会话元信息(**携带任意 query 不再 404,query 一律忽略**):
 
 ```json
-{ "id": "sess_…", "title": "…", "personaId": "…|null", "busy": false,
-  "archived": false, "pendingInserts": [] }
+{ "id": "sess_…", "title": "…", "personaId": "…|null", "personaName": "工程师|缺省",
+  "busy": false, "archived": false, "pendingInserts": [], "lastMessage": "…|缺省" }
 ```
 
 `pendingInserts` v1 恒为空数组(插入消息走 send 的忙时回退,不落独立队列)。
@@ -159,6 +165,28 @@ relations:
 
 ---
 
+## POST /api/sessions/:id/archive
+
+归档 / 取消归档(与桌面「归档对话」同源):
+
+**请求**:`{ "archived": true }`(`archived` 必填布尔)。
+
+**响应**:`{ "ok": true, "archived": true }`。
+
+**错误**:`404` 会话不存在;`409` 会话有正在运行的回合,不可归档(与桌面同口径;取消归档随时可以);`400` 缺 `archived`。归档后的会话仍出现在 `/api/sessions` 列表(带 `archived: true`),设备端自行决定展示方式(安卓端长按会话项操作)。
+
+---
+
+## POST /api/devices/self
+
+**自助吊销本设备**(凭当前 Bearer token 自证身份,无需物理回到桌面):服务端按 token 反查 deviceId,走吊销全套清理(配置 + 密钥 + 活动态 + SSE 连接 + token 缓存)。
+
+**请求**:无请求体。
+
+**响应**:`{ "ok": true }`。**此后该 token 一律 `401`**(包括本请求之后的任何重放)——设备端成功后应立即清除本地凭据(deviceId/token),引导重新配对。典型场景:设备丢失/易主时远程自救。前提:攻击者尚未更改凭据;若怀疑凭据泄漏,应在桌面端吊销该设备。
+
+---
+
 ## GET /api/sessions/:id/messages?start=&limit=
 
 历史回填。`start` 为全量投影中的起点(默认 `total-400`,即最新一段),`limit` 上限 2000。**响应字段**:
@@ -203,7 +231,7 @@ relations:
 | 端点 | 投递范围 |
 |---|---|
 | `GET /api/sessions/:id/events` | 该会话**全部回合**的 chat 帧 + 通知(**推荐**,设备端主用) |
-| `GET /api/turns/:turnId/events` | 仅该回合的 chat 帧 |
+| `GET /api/turns/:turnId/events` | 仅该回合的 chat 帧;**未知 turnId → `404`**(turn_start 入环即登记,设备端拿到的 turnId 必然已登记;被缓冲淘汰的老回合同 404) |
 
 均支持 `Last-Event-ID` 头与 `?lastEventId=N` 等价的续传语义、心跳与连接治理。详见[事件流](general-device-sse.mdx)。
 
@@ -216,8 +244,8 @@ relations:
 | 400 | 参数/编码不合法 | 展示 `error` 文案 |
 | 401 | 未配对/凭据无效/设备被停用 | 转「重新配对」流程,清除本地凭据 |
 | 403 | 越权(白名单外路径、跨源 Origin) | 不重试,提示 |
-| 404 | 会话/文件不存在 | 不重试 |
-| 409 | 业务冲突:卡已结束(先到者生效)、忙且插入失败 | 拉最新状态,收卡/提示 |
+| 404 | 会话/文件/回合不存在(回合级 SSE 未知 turnId) | 不重试 |
+| 409 | 业务冲突:卡已结束(先到者生效)、忙且插入失败、忙时归档 | 拉最新状态,收卡/提示 |
 | 429 | 限速(配对 10 次/分/IP,全局熔断 20 连败) | 退避 ≥60s,引导桌面重新出码 |
 | 500 | 服务端内部错误 | 可重试一次,再失败提示 |
 
