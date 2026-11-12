@@ -171,5 +171,54 @@ const msgs = JSON.parse(execSync(`curl -s "http://127.0.0.1:4317/api/sessions/${
 const attCount = msgs.messages.filter((m) => m.role === 'user' && m.attachments > 0).length
 ok('⑮d 回填报 attachments 计数 ≥1', attCount >= 1, `count=${attCount}`)
 
+// ⑯ 角色:清单端点;建会话带 personaId → 单会话查回绑定;未知角色 400
+const pl = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/personas -H "Authorization: Bearer ${T5}"`).toString())
+ok('⑯a 角色清单为数组', Array.isArray(pl.personas), `n=${(pl.personas || []).length}`)
+const pid = pl.personas?.[0]?.id
+if (pid) {
+  const sidP = JSON.parse(execSync(`curl -s -X POST http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"personaId":"${pid}"}'`).toString()).id
+  const oneP = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/sessions/${sidP} -H "Authorization: Bearer ${T5}"`).toString())
+  ok('⑯b 建会话带角色并查回', oneP.personaId === pid, `${oneP.personaId}`)
+} else {
+  ok('⑯b 建会话带角色并查回', true, '无种子角色,跳过正向断言')
+}
+const badP = execSync(`curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"personaId":"no_such_persona"}'`).toString().trim()
+ok('⑯c 未知角色 → 400', badP === '400', `got ${badP}`)
+
+// ⑰ 待决卡角标:发 "ask"(mock ask 分支)→ 列表 pendingCard=true → 作答 → false
+const sidC = JSON.parse(execSync(`curl -s -X POST http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}"`).toString()).id
+execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${sidC}/send" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"text":"ask"}' > /dev/null`)
+await sleep(2500)
+const listC = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}"`).toString())
+const rowC = listC.sessions.find((x) => x.id === sidC)
+ok('⑰a 未决卡 pendingCard=true', rowC?.pendingCard === true, `got ${rowC?.pendingCard}`)
+const cardKey = JSON.parse(execSync(`curl -s "http://127.0.0.1:4317/api/sessions/${sidC}/messages?limit=50" -H "Authorization: Bearer ${T5}"`).toString())
+  .messages.find((m) => m.card)?.card?.key
+if (cardKey) {
+  execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${sidC}/answer" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"key":"${cardKey}","kind":"ask","payload":{"answers":["Kotlin"]}}' > /dev/null`)
+  await sleep(1500)
+  const rowC2 = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}"`).toString()).sessions.find((x) => x.id === sidC)
+  ok('⑰b 作答后 pendingCard=false', rowC2?.pendingCard === false, `got ${rowC2?.pendingCard}`)
+} else {
+  ok('⑰b 作答后 pendingCard=false', false, '未取到卡 key')
+}
+
+// ⑱ 重命名:改 → 查回;空标题恢复自动派生
+const r1 = JSON.parse(execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${sidC}/rename" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"title":"门禁改名测试"}'`).toString())
+const r2 = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/sessions/${sidC} -H "Authorization: Bearer ${T5}"`).toString())
+ok('⑱ 重命名生效', r1.ok === true && r2.title === '门禁改名测试', r2.title)
+
+// ⑲ 删除:DELETE → GET 404 → 列表不含
+const dCode = execSync(`curl -s -o /dev/null -w '%{http_code}' -X DELETE "http://127.0.0.1:4317/api/sessions/${sidC}" -H "Authorization: Bearer ${T5}"`).toString().trim()
+const dGone = execSync(`curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:4317/api/sessions/${sidC}" -H "Authorization: Bearer ${T5}"`).toString().trim()
+ok('⑲ 删除 → 200 + 查 404', dCode === '200' && dGone === '404', `del=${dCode} get=${dGone}`)
+
+// ⑳ tasks/models:只读清单形状(tasks 可为空数组;models 须含 mockprov:mock-model 且带 active)
+const tk = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/tasks -H "Authorization: Bearer ${T5}"`).toString())
+ok('⑳a 任务清单为数组', Array.isArray(tk.tasks), `n=${(tk.tasks || []).length}`)
+const ml = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/models -H "Authorization: Bearer ${T5}"`).toString())
+const hasMock = (ml.models || []).some((m) => m.ref === 'mockprov:mock-model')
+ok('⑳b 模型清单含 active 默认', Array.isArray(ml.models) && hasMock && typeof ml.active === 'string', `n=${(ml.models || []).length}`)
+
 console.log(`\n===== ${pass}/${pass + fail} PASS =====`)
 process.exit(fail ? 1 : 0)
