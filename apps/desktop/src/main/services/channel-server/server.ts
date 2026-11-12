@@ -23,6 +23,7 @@ import { deviceIdForToken, invalidateTokenCache } from './auth'
 import { noteDeviceSeen, noteDeviceStream, dropDevice } from './activity'
 import { addDevice, getGeneralServerConfig, removeDevice, sanitizeDeviceName, type GeneralServerConfig } from './config'
 import { consumePairCodeIfMatch, notePairFailure, pairAttemptAllowed, restorePairCode } from './pairing'
+import { WEB_CONSOLE_HTML } from './web-console'
 import { canAdmit, closeDeviceConnections, openSessionStream, openTurnStream, turnRegistered } from './sse'
 
 /**
@@ -394,6 +395,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         protocol: PROTOCOL_VERSION,
         capabilities: PROTOCOL_CAPABILITIES
       })
+    }
+
+    // ── Web 控制台：页面壳免鉴权（数据端点仍一律 Bearer）──
+    // 同端口托管是浏览器接入的前提：页面 Origin = <本机地址>:<通道端口>，与 Origin 双重校验
+    // （主机名=本机地址 + 端口=监听端口）天然匹配；独立部署的静态托管会被 403 拦下。
+    // 只放行固定两个路径，不做通用静态服务（白名单口径与附件一致）。
+    if (method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(WEB_CONSOLE_HTML)
+      return
     }
 
     // ── 鉴权中间件：其余一律 Bearer token（设计 §3.2）──
