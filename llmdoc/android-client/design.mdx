@@ -59,6 +59,8 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 
 在 `apps/desktop/src/main/services/` 下新增 `channel-server/`（命名待实现时定），职责单一：**把已存在的 chatRuntime 与 chat-bus 暴露给已配对的设备**，不复制任何业务规则。
 
+> **协议通用化（2026-11-12 修订）**：入站通道不限定「安卓」——任何实现本协议（HTTP REST + SSE 长连接 + Bearer 鉴权）的设备都可接入，桌面「机器人」面板统称**通用设备（GeneralDevice）**。安卓 App 是该协议的首个实现。代码/IPC/类型命名一律用 general。
+
 ### 3.1 传输
 
 - 进程内 `node:http` 起监听，默认端口 **4317**（可配置，配置存 `config.json`，键 `androidServer.{enabled,port,host}`）。
@@ -68,7 +70,9 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 
 ### 3.2 鉴权与配对（必须先于任何会话语义）
 
-- 首次启用时生成一次性**配对码**（6 位数字，5 分钟有效），在桌面「机器人」面板的「安卓设备」入口显示（实现落点：renderer BotsPane，原计划「设置 → 远程设备」处无对应信息架构），并附二维码（内容：`deva://pair?host=<host>&port=<port>&code=<code>`）。
+- 首次启用时生成一次性**配对码**（6 位数字，5 分钟有效），在桌面「机器人」面板的「通用设备」入口显示（列表置顶行 + 右侧详情，「+」菜单也提供通用设备项直达配对码），并附二维码（内容：`deva://pair?host=<host>&port=<port>&code=<code>`）。
+- **设备名全局唯一**：配对时若设备名（去首尾空格、不分大小写）与已配对设备重名，配对拒绝（409），设备端需换名重试。
+- **配对码一次性原子消费**：校验与作废在同一步同步完成（`consumePairCodeIfMatch`），并发同码配对有且只有一个成功——杜绝「校验→异步落密钥→作废」窗口期的双重接入竞态。
 - 手机 `POST /api/pair { code, deviceName, devicePubKey }` → 返回 `{ deviceId, token }`；token 为随机 32 字节，落盘 `secrets.json`，键 `android:<deviceId>:token`（沿用现有 secrets 约定，**不复用 `remote:<botId>:*`**）。
 - 之后所有请求带 `Authorization: Bearer <token>`；token 可在桌面端吊销（`DELETE /api/devices/:id`）。
 - 失败限速：同 IP 每分钟 10 次配对尝试，超限 429。
@@ -177,7 +181,7 @@ app/src/main/java/zai/deva/android/
 ## 8. 与现有代码的边界（实现纪律）
 
 - **不改** `chat.ts` 的回合语义、`tools-policy` 的权限判定、`hub.ts` 的 IM 绑定逻辑。
-- 新增文件只落在 `channel-server/`、`src/preload` 的少量新增 IPC（用于桌面端显示配对码/设备列表）、`renderer` 机器人面板的「安卓设备」入口（BotsPane + i18n）。
+- 新增文件只落在 `channel-server/`、`src/preload` 的少量新增 IPC（`general:*`，用于桌面端显示配对码/设备列表）、`renderer` 机器人面板的「通用设备」入口（BotsPane + i18n）。
 - 安卓工程放在 `apps/android/`（与 `apps/desktop` 平级），独立 Gradle 工程，不进 pnpm workspace。
 - 任何对 `ChatStreamEvent` 的修改都要同步本文 §3.4 的表。
 
