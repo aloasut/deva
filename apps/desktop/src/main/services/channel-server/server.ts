@@ -6,6 +6,7 @@ import { basename, extname, isAbsolute } from 'node:path'
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { app } from 'electron'
 import { getChatRuntime, parseAskQuestions } from '../chat'
+import { acceptPastedAttachment } from '../attachments'
 import { ensureSession, getSession, listSessions, save as saveProject, setSessionArchived } from '../chat-store'
 import type { StoredSession } from '../chat-store'
 import { resolveDefaultEffort, resolveModelRefForSend } from '../model-resolve'
@@ -68,6 +69,25 @@ function readJson<T>(req: IncomingMessage, limit = 64 * 1024): Promise<T | null>
   })
 }
 
+/** 读原始字节请求体（附件上传）。超限返回 null（调用方回 413），不落盘。 */
+function readRaw(req: IncomingMessage, limit: number): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > limit) {
+        resolve(null)
+        req.destroy()
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', () => resolve(null))
+  })
+}
+
 /** 协议版本与能力集：/api/info 与 pair 响应携带，设备端据此协商（设计 §3.3 版本化）。 */
 const PROTOCOL_VERSION = 1
 const PROTOCOL_CAPABILITIES = [
@@ -80,8 +100,12 @@ const PROTOCOL_CAPABILITIES = [
   'set-enabled',
   'rename-device',
   'self-revoke',
-  'session-archive'
+  'session-archive',
+  'attachments'
 ] as const
+
+/** 附件上传的传输上限（读字节缓冲的硬顶；类型/体积的细口径在 attachments.inspect 里，超限降级为位置注入）。 */
+const ATTACHMENT_UPLOAD_MAX = 24 * 1024 * 1024
 
 function genDeviceId(): string {
   return `dev_${Date.now().toString(36)}_${randomInt(0, 36 ** 4).toString(36)}`
@@ -361,6 +385,28 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 200, { ok: true })
     }
 
+    // POST /api/attachments?name=…：附件上传（设备端「只交字节、不交路径」，与桌面粘贴同一管道）——
+    // 落盘到粘贴目录并登记白名单，返回的 path 只能用于 send 的 attachments[]（send 侧未登记路径
+    // 一律「已忽略未授权文件」，任意路径读盘不可能）。类型/体积超限降级为「位置注入」（kind=file）。
+    if (url.pathname === '/api/attachments' && method === 'POST') {
+      const rawName = url.searchParams.get('name') ?? ''
+      if (!rawName.trim()) return json(res, 400, { error: '缺少附件名（?name=…）。' })
+      const body = await readRaw(req, ATTACHMENT_UPLOAD_MAX)
+      if (body === null || body.length === 0)
+        return json(res, body === null ? 413 : 400, {
+          error: body === null ? `附件超过 ${ATTACHMENT_UPLOAD_MAX / 1024 / 1024}MB 上限。` : '附件内容为空。'
+        })
+      const ct = req.headers['content-type'] ?? 'application/octet-stream'
+      const att = await acceptPastedAttachment({
+        name: rawName,
+        mime: Array.isArray(ct) ? ct[0] : ct,
+        size: body.length,
+        data: new Uint8Array(body)
+      })
+      if (!att.supported) return json(res, 400, { error: att.reason ?? '不支持的附件类型。' })
+      return json(res, 200, { path: att.path, name: att.name, kind: att.kind })
+    }
+
     // GET /api/info：版本、主机名、平台、是否首次运行（首次运行 = 还没有任何顶层会话；
     // 成员会话（子智能体）与 /api/sessions 列表同口径过滤，避免「列表空但 firstRun=false」的矛盾）
     if (method === 'GET' && url.pathname === '/api/info')
@@ -443,6 +489,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       // 会话忙 → 回退为「插入进行中的任务」(与 hub/IM 同口径,审查 A4):
       // 设备在回合进行中再发消息,桌面原语就是插入当前这一轮。
       // 两次 isBusy 检查(读 attachments 前后)防竞态,409 文案统一为 hub 同款。
+      // 注意:rt.insert 无 attachments 入参——忙时插入只带正文(与桌面/IM 同语义)。
       if (rt.isBusy(sid)) {
         const r = rt.insert({ sessionId: sid, text, model })
         if (r.ok) return json(res, 200, { inserted: true })
