@@ -148,7 +148,7 @@ data: {"sessionId":"...","turnId":"...","type":"text_delta","text":"..."}
 ### 实现超出设计的记录（防文档腐化，2026-11-12）
 
 - 设备在线态 online/lastSeenAt（§3.5 已回写）；会话列表过滤成员会话（与 hub 同口径）；发送模型解析链已抽 `model-resolve.resolveModelRefForSend` 供 hub 与通道同源；单设备 enabled 与改名；稳健性自加：错误契约（401→重新配对终态/403 白名单/409 忙）、FileSaver API 分档回落、SecureStore KeyStore 损坏自愈、图片预览 25MB cap+LruCache+EXIF、明文提示双落点。
-- **三方对拍遗留项四轮闭环（2026-11-12，交接文档史实收口）**：第一轮 5-agent 审查 P0/P1/P2（至 a28780c）；第二轮 P1–P2 加固（配对成功桌面通知、`POST /api/devices/self` 自助吊销、`POST /api/sessions/:id/archive` 忙时 409、Origin 端口校验、firstRun 过滤成员会话、列表 personaName/lastMessage、单会话 GET 忽略 query、回合级流未知 turnId 404、busy 409 文案统一 hub 同款、启停均失效 token 缓存、ChatScreen 稳定 key+delta 合帧 30fps）；第三轮 **§1 附件上传落 v1**（原 v2 预留，`POST /api/attachments` 与桌面粘贴同管道+安卓选图上传）并修复真机观察项（双用户气泡竞态→pendingSendText 在途标记、EventStream 看门狗中断噪音）；第四轮 **§6 白烧码修复**（消费保持先行，setSecret 失败按原有效期恢复码）。协议门禁扩至 22 项（`apps/desktop/scripts/general-device-gate.mjs`）。第五轮 **用户侧六需求**（角色清单/建会话选角色、列表 focusRoot+pendingCard「待操作」角标、删除/重命名端点、定时任务只读清单、模型清单+对话内切换——rename/delete 经 chat.ts 模块级委托导出与桌面 IPC 共用同一闭包实现）。门禁扩至 31 项。
+- **三方对拍遗留项四轮闭环（2026-11-12，交接文档史实收口）**：第一轮 5-agent 审查 P0/P1/P2（至 a28780c）；第二轮 P1–P2 加固（配对成功桌面通知、`POST /api/devices/self` 自助吊销、`POST /api/sessions/:id/archive` 忙时 409、Origin 端口校验、firstRun 过滤成员会话、列表 personaName/lastMessage、单会话 GET 忽略 query、回合级流未知 turnId 404、busy 409 文案统一 hub 同款、启停均失效 token 缓存、ChatScreen 稳定 key+delta 合帧 30fps）；第三轮 **§1 附件上传落 v1**（原 v2 预留，`POST /api/attachments` 与桌面粘贴同管道+安卓选图上传）并修复真机观察项（双用户气泡竞态→pendingSendText 在途标记、EventStream 看门狗中断噪音）；第四轮 **§6 白烧码修复**（消费保持先行，setSecret 失败按原有效期恢复码）。协议门禁扩至 22 项（`apps/desktop/scripts/general-device-gate.mjs`）。第五轮 **用户侧六需求**（角色清单/建会话选角色、列表 focusRoot+pendingCard「待操作」角标、删除/重命名端点、定时任务只读清单、模型清单+对话内切换——rename/delete 经 chat.ts 模块级委托导出与桌面 IPC 共用同一闭包实现）。门禁扩至 31 项。第六轮 **会话页心流简化**（UI 单端）：注意力分区取代筛选 chips（原分类排序能力降为 ⋮ 整理弹窗的分组项）、行内降噪（角色/目录并入次行）、归档默认隐藏（⋮ Switch 临时显示）、FAB → 角色选择点选直达创建。
 
 ## 4. 安卓端结构
 
@@ -181,7 +181,7 @@ app/src/main/java/zai/deva/android/
 ## 5. UI 信息架构（v1）
 
 1. **服务器页**（首次启动）：添加服务器 → 手填 `host:port` + 配对码 → 连接（二维码扫码配对为 v2：桌面已出 `deva://pair` 码，设备端深链/扫码后补）。
-2. **会话页**：顶部服务器切换器；列表按更新时间倒序；每项显示标题、角色徽标、忙/闲、最后一条消息摘要。
+2. **会话页（心流形态，2026-11-12 简化轮修订）**：默认**注意力分区**——「需要你」(有未决卡) → 「进行中」(回合运行) → 「最近」(按更新时间)，归档默认隐藏（顶栏 ⋮「整理」弹窗可临时显示/切换按角色与按目录分组）。行内只保留标题、摘要、待操作角标、相对时间与忙/闲；角色/目录并入次行文字（分组视图下自动去冗余）。FAB「新对话」→ 角色选择（搜索 + 点选**直达创建**；「不选角色」与桌面新建同语义，首发落库绑定默认角色，绑定后不可改）。
 3. **对话页**：气泡流（用户右、助手左），工具调用折叠成一行"正在…"，可展开看参数摘要；底部固定输入框；右上停止按钮只在 `Streaming` 出现。
 4. **卡片区**：紧贴对话末尾。问答卡支持单选/多选/自由输入；计划卡展示计划 + 「批准/继续完善/取消」三键；挂载请求卡显示路径 + **手机端仅「暂不挂载」**（指引去电脑端处理——设备端拿不到桌面真实路径，「挂载」只能在桌面系统对话框完成；2026-11-12 修订）。
 5. **交付物**：对话内显示文件名与大小，点击下载到 `Downloads/Deva/`；图片直接内联预览。
