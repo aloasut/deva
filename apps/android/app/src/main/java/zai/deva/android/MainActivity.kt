@@ -1,6 +1,7 @@
 package zai.deva.android
 
 import android.content.Intent
+import android.util.Log
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -71,6 +72,7 @@ class MainActivity : ComponentActivity() {
         val code = data.getQueryParameter("code")?.takeIf { it.length == 6 } ?: return
         zai.deva.android.AppGraph.pendingPairLink.value =
             zai.deva.android.AppGraph.GeneralPairLink(host, port, code)
+        Log.d("deva-dl", "深链入队 host=$host port=$port code=$code")
         navigateToSettings?.invoke()
     }
 }
