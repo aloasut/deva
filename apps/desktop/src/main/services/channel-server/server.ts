@@ -6,7 +6,7 @@ import { basename, extname, isAbsolute } from 'node:path'
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { app } from 'electron'
 import { getChatRuntime, parseAskQuestions, renameSessionTitle, deleteSessionFully } from '../chat'
-import { acceptPastedAttachment } from '../attachments'
+import { acceptExternalAttachment } from '../attachments'
 import { ensureSession, getSession, listSessions, save as saveProject, setSessionArchived } from '../chat-store'
 import type { StoredSession } from '../chat-store'
 import { activeModelRef, listEnabledModels, resolveDefaultEffort, resolveModelRefForSend } from '../model-resolve'
@@ -429,7 +429,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
           error: body === null ? `附件超过 ${ATTACHMENT_UPLOAD_MAX / 1024 / 1024}MB 上限。` : '附件内容为空。'
         })
       const ct = req.headers['content-type'] ?? 'application/octet-stream'
-      const att = await acceptPastedAttachment({
+      const att = await acceptExternalAttachment({
         name: rawName,
         mime: Array.isArray(ct) ? ct[0] : ct,
         size: body.length,

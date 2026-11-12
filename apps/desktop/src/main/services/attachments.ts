@@ -147,12 +147,12 @@ function pasteName(raw: string, mime: string): string {
 }
 
 /**
- * 外部字节 → 附件（粘贴 IPC 与通用设备上传端点共用的管道）：文件名 + 字节进来，
+ * 外部字节 → 附件（桌面粘贴 IPC 与通用设备上传端点共用的管道）：文件名 + 字节进来，
  * 净化命名、按类型/体积判定并登记白名单、落盘到粘贴目录，返回可交给 send 的路径。
  * 「渲染层/设备端只交内容、从不交路径，不能伪造任意路径读盘」的不变式不变。
  * data=null（超大文件没读字节）仅桌面粘贴可用——设备端上传恒带字节。
  */
-export async function acceptPastedAttachment(
+export async function acceptExternalAttachment(
   file: { name: string; mime: string; size: number; data: Uint8Array | null }
 ): Promise<PickedAttachment> {
   const key = file.data
@@ -187,7 +187,7 @@ export function registerAttachmentsIpc(getWindow: () => BrowserWindow | null): v
   ipcMain.handle(
     'fs:paste-attachment',
     (_e, file: { name: string; mime: string; size: number; data: Uint8Array | null }): Promise<PickedAttachment> =>
-      acceptPastedAttachment(file)
+      acceptExternalAttachment(file)
   )
 
   // 拖入 / 粘贴的条目：按下标逐个回答。文件夹登记并返回位置；带真实路径的文件按选择框同样的规则判定
