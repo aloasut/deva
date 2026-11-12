@@ -139,6 +139,7 @@ class TimelineBuilder {
                     )
             }
             "interaction_resolved" -> resolveCard(data)
+            "stream_reset" -> dropStepPartial()
             "error" -> items.add(TimelineItem.Error(data.optString("message")))
             // done / usage / todos / compacted 等：P2 不展示（done 由 SessionStore 消费以收尾状态）
             else -> unknownEvents++
@@ -198,6 +199,23 @@ class TimelineBuilder {
         if (idx >= 0) {
             val d = items[idx] as TimelineItem.Deliverable
             items[idx] = d.copy(files = files, failed = failed)
+        }
+    }
+
+    /**
+     * stream_reset(桌面重连后重跑当前步骤):丢弃末尾本步的残缺 thinking/text——
+     * 工具行、用户气泡、交互卡、交付卡、错误都是步骤边界,重跑会重新发完整内容。
+     * 与桌面 dropStepPartial 同口径(边界后的残缺尾部,边界本身保留)。
+     */
+    private fun dropStepPartial() {
+        var i = items.size - 1
+        while (i >= 0) {
+            when (val it = items[i]) {
+                is TimelineItem.Thinking -> items.removeAt(i)
+                is TimelineItem.Text -> if (!it.fromUser) items.removeAt(i) else return
+                else -> return
+            }
+            i--
         }
     }
 

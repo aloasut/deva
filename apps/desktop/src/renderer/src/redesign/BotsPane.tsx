@@ -879,6 +879,10 @@ function GeneralDetail({ pairRequest }: { pairRequest: number }): React.JSX.Elem
   const { t } = useI18n()
   const dialog = useDialog()
   const toast = useToast()
+  // pairRequest 只消费一次:+ 菜单触发的自动出码不能在每次重挂载时都顶掉旧码
+  const handledPairRequest = useRef(-1)
+  // 配对码活着时的引用:离开详情(unmount)即作废——看不到的码不该继续有效(与 IM BotDetail 同口径)
+  const livePair = useRef(false)
   const [st, setSt] = useState<GeneralView | null>(null)
   const [pair, setPair] = useState<
     Extract<Awaited<ReturnType<typeof window.deva.general.pairCode>>, { ok: true }> | null
@@ -901,20 +905,42 @@ function GeneralDetail({ pairRequest }: { pairRequest: number }): React.JSX.Elem
     const id = window.setInterval(() => setTick((n) => n + 1), 1000)
     return () => window.clearInterval(id)
   }, [pair])
-  // 「+」菜单选通用设备:导航到此详情并自动出码
   useEffect(() => {
-    if (pairRequest > 0) makeCode()
+    livePair.current = pair !== null
+  }, [pair])
+  // 离开详情:未过期的配对码立即作废——看不到的码不该继续有效(与 IM BotDetail 同口径)
+  useEffect(
+    () => () => {
+      if (livePair.current) void window.deva.general.pairCancel()
+    },
+    []
+  )
+  // 「+」菜单选通用设备:导航到此详情并自动出码(每个 tick 只消费一次)
+  useEffect(() => {
+    if (pairRequest > 0 && handledPairRequest.current !== pairRequest) {
+      handledPairRequest.current = pairRequest
+      makeCode()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairRequest])
   const left = pair ? Math.max(0, Math.ceil((pair.expiresAt - Date.now()) / 1000)) : 0
   useEffect(() => {
-    if (pair && left <= 0) setPair(null)
+    if (pair && left <= 0) {
+      livePair.current = false
+      setPair(null)
+    }
   }, [pair, left])
 
   const makeCode = (): void => {
     void window.deva.general.pairCode().then((r) => {
-      if (r.ok) setPair(r)
-      else toast.show({ variant: 'error', message: r.error || t('bots.failed') })
+      if (r.ok) {
+        setPair(r)
+        livePair.current = true
+      } else {
+        setPair(null)
+        livePair.current = false
+        toast.show({ variant: 'error', message: r.error || t('bots.failed') })
+      }
     })
   }
 
@@ -982,6 +1008,7 @@ function GeneralDetail({ pairRequest }: { pairRequest: number }): React.JSX.Elem
               <button
                 className="ext-linkbtn"
                 onClick={() => {
+                  livePair.current = false
                   setPair(null)
                   void window.deva.general.pairCancel()
                 }}

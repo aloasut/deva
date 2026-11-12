@@ -9,7 +9,7 @@ import { ensureSession, getSession, listSessions, save as saveProject } from '..
 import type { StoredSession } from '../chat-store'
 import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from '../model-resolve'
 import { getPersona } from '../personas'
-import { deleteSecretsByPrefix, setSecret } from '../secrets'
+import { setSecret } from '../secrets'
 import type { Message } from '../../providers/types'
 import { isEffortLevel } from '../../../shared/effort'
 import type { ChannelState } from '../remote/types'
@@ -65,6 +65,15 @@ function readJson<T>(req: IncomingMessage, limit = 64 * 1024): Promise<T | null>
 
 function genDeviceId(): string {
   return `dev_${Date.now().toString(36)}_${randomInt(0, 36 ** 4).toString(36)}`
+}
+
+/** 路径段解码：畸形百分号编码返回 null（调用方回 404/400，而非落进 500）。 */
+function decodeSegment(v: string): string | null {
+  try {
+    return decodeURIComponent(v)
+  } catch {
+    return null
+  }
 }
 
 /** 回填给手机端的展示条目（不含工具输出/思考等模型上下文细节，见 projectMessages）。 */
@@ -238,6 +247,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const code = typeof body?.code === 'string' ? body.code.trim() : ''
       if (!code) return json(res, 400, { error: '缺少配对码。' })
       // 一次性原子消费：校验+作废同步完成，并发同码有且只有一个成功（设计 §3.2）
+      // 设备名先于配对码消费：净化（去 C0/C1 控制符、bidi 覆写与零宽字符）+ 截断，
+      // 重名（NFKC 归一化后不分大小写）即 409 且不烧一次性码——设备端换名后同码可重试。
+      const rawName = typeof body?.deviceName === 'string' ? body.deviceName : ''
+      const name =
+        rawName
+          .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '')
+          .trim()
+          .slice(0, 40) || '通用设备'
+      const nfkc = (v: string): string => v.normalize('NFKC').toLowerCase()
+      if (getGeneralServerConfig().devices.some((d) => nfkc(d.name.trim()) === nfkc(name)))
+        return json(res, 409, { error: `设备名「${name}」已被占用，请换一个名字并重新生成配对码。` })
+      // 一次性原子消费：校验+作废同步完成，并发同码有且只有一个成功（设计 §3.2）
       if (!consumePairCodeIfMatch(code))
         return json(res, 400, { error: '配对码不正确或已过期，请在电脑端重新生成。' })
       const deviceId = genDeviceId()
@@ -245,19 +266,6 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const saved = await setSecret(`general:${deviceId}:token`, token)
       if (!saved.ok)
         return json(res, 500, { error: '系统密钥存储不可用，无法安全保存设备凭据。' })
-      const name =
-        typeof body?.deviceName === 'string' && body.deviceName.trim()
-          ? body.deviceName.trim().slice(0, 40)
-          : '通用设备'
-      // 设备名全局唯一（设计 §3.2）：重名拒绝（409），设备端换名重试。
-      // 检查与 addDevice 同步相邻（中间只隔同步调用），单线程下无并发窗口。
-      const clash = getGeneralServerConfig().devices.some(
-        (d) => d.name.trim().toLowerCase() === name.toLowerCase()
-      )
-      if (clash) {
-        await deleteSecretsByPrefix(`general:${deviceId}:`)
-        return json(res, 409, { error: `设备名「${name}」已被占用，请换一个名字再配对。` })
-      }
       addDevice({ id: deviceId, name, pairedAt: Date.now() })
       invalidateTokenCache()
       return json(res, 200, { deviceId, token })
@@ -313,7 +321,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (mSend && method === 'POST') {
       const rt = getChatRuntime()
       if (!rt) return json(res, 503, { error: 'Deva 还没准备好，请稍后再试。' })
-      const sid = decodeURIComponent(mSend[1])
+      const sid = decodeSegment(mSend[1])
+      if (sid === null) return json(res, 400, { error: '会话 id 编码不合法。' })
       const body = await readJson<{
         text?: unknown
         attachments?: unknown
@@ -348,8 +357,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         })
         return json(res, 200, { turnId })
       } catch (e) {
-        // busy 等业务错误从 chatRuntime 抛出：409 原样带文案回给手机端，不吞
-        return json(res, 409, { error: errText(e) })
+        // 只有「会话忙」这类业务错回 409（手机端按冲突处理），其余（落盘失败等）按 500，不混淆语义
+        const msg = errText(e)
+        return json(res, msg.includes('正在进行中') ? 409 : 500, { error: msg })
       }
     }
 
@@ -360,7 +370,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (mAns && method === 'POST') {
       const rt = getChatRuntime()
       if (!rt) return json(res, 503, { error: 'Deva 还没准备好，请稍后再试。' })
-      if (!getSession(decodeURIComponent(mAns[1]))) return json(res, 404, { error: '会话不存在。' })
+      const ansSid = decodeSegment(mAns[1])
+      if (ansSid === null || !getSession(ansSid)) return json(res, 404, { error: '会话不存在。' })
       const body = await readJson<{ key?: unknown; kind?: unknown; payload?: unknown }>(req)
       const key = typeof body?.key === 'string' ? body.key.trim() : ''
       if (!key) return json(res, 400, { error: '缺少卡片键（key）。' })
@@ -383,8 +394,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         return json(res, 200, { ok: true })
       }
       if (body?.kind === 'mount') {
-        const path = typeof payload.path === 'string' && payload.path.trim() ? payload.path.trim() : null
-        if (!rt.answerMount({ key, path })) return json(res, 409, { error: '这张挂载卡已结束或不存在。' })
+        // 设计 §3.2/§7 不变量:挂载路径只能来自桌面系统目录对话框,远程/通用设备一律只传 null——
+        // 这里不透传请求里的 path,防止把任意目录登记为受信根(trustRoot)后借 agent 读写外传。
+        if (!rt.answerMount({ key, path: null })) return json(res, 409, { error: '这张挂载卡已结束或不存在。' })
         return json(res, 200, { ok: true })
       }
       return json(res, 400, { error: 'kind 必须是 ask / plan / mount。' })
@@ -402,7 +414,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // GET /api/sessions/:id/messages：历史回填（投影展示条目；?start=&limit= 向后翻页，默认返回最新一段）
     const mMsg = url.pathname.match(/^\/api\/sessions\/([^/]+)\/messages$/)
     if (mMsg && method === 'GET') {
-      const session = getSession(decodeURIComponent(mMsg[1]))
+      const msgSid = decodeSegment(mMsg[1])
+      if (msgSid === null) return json(res, 400, { error: '会话 id 编码不合法。' })
+      const session = getSession(msgSid)
       if (!session) return json(res, 404, { error: '会话不存在。' })
       const items = await projectMessages(session.messages, session)
       const total = items.length
@@ -419,7 +433,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // 的 tool_result 后拉这口补清单）。回填口 /messages 的 files 字段与其同形。
     const mDel = url.pathname.match(/^\/api\/sessions\/([^/]+)\/deliveries$/)
     if (mDel && method === 'GET') {
-      const session = getSession(decodeURIComponent(mDel[1]))
+      const delSid = decodeSegment(mDel[1])
+      if (delSid === null) return json(res, 400, { error: '会话 id 编码不合法。' })
+      const session = getSession(delSid)
       if (!session) return json(res, 404, { error: '会话不存在。' })
       const toolUseId = url.searchParams.get('toolUseId') ?? ''
       if (!toolUseId) return json(res, 400, { error: '缺少 toolUseId。' })
@@ -431,7 +447,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (url.pathname === '/api/files' && method === 'GET') {
       const sid = url.searchParams.get('session') ?? ''
       const p = url.searchParams.get('path') ?? ''
-      const session = sid ? getSession(decodeURIComponent(sid)) : undefined
+      const session = sid ? getSession(decodeSegment(sid) ?? '') : undefined
       if (!session) return json(res, 404, { error: '会话不存在。' })
       if (!p || !Object.values(session.delivered ?? {}).some((arr) => arr.includes(p)))
         return json(res, 403, { error: '只允许下载该对话交付过的文件。' })
