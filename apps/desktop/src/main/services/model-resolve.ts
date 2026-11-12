@@ -158,3 +158,47 @@ export function resolveDefaultEffort(): EffortLevel {
     return 'default'
   }
 }
+
+export interface ListedModel {
+  /** `"providerId:modelId"`，可直接用于 send 的 modelRef。 */
+  ref: string
+  /** 模型显示名。 */
+  name: string
+  /** 提供方显示名。 */
+  provider: string
+}
+
+/**
+ * 通道/设备端的只读模型清单。口径与 resolveRefStrict 一致：只看 id 是否可解析，不按 enabled 过滤
+ * （提供方没配模型自然为空；密钥与 apiHost 不在此出——非敏感明文项）。
+ */
+export function listEnabledModels(): ListedModel[] {
+  try {
+    const models = (getConfig().models ?? {}) as { providers?: unknown }
+    const providers = Array.isArray(models.providers) ? (models.providers as StoredProvider[]) : []
+    const out: ListedModel[] = []
+    for (const p of providers) {
+      if (!p || typeof p.id !== 'string') continue
+      const pname = typeof (p as { name?: unknown }).name === 'string' ? (p as { name: string }).name : p.id
+      const list = Array.isArray(p.models) ? (p.models as StoredModelDef[]) : []
+      for (const m of list) {
+        if (!m || typeof m.id !== 'string') continue
+        const mname = typeof (m as { name?: unknown }).name === 'string' ? (m as { name: string }).name : m.id
+        out.push({ ref: `${p.id}:${m.id}`, name: mname, provider: pname })
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/** 当前全局默认模型引用（config 的 activeModelId；未配置返回 null）。 */
+export function activeModelRef(): string | null {
+  try {
+    const models = (getConfig().models ?? {}) as { activeModelId?: unknown }
+    return typeof models.activeModelId === 'string' && models.activeModelId ? models.activeModelId : null
+  } catch {
+    return null
+  }
+}

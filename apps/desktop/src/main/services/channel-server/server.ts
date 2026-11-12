@@ -5,12 +5,14 @@ import { lanHosts } from './pairing'
 import { basename, extname, isAbsolute } from 'node:path'
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { app } from 'electron'
-import { getChatRuntime, parseAskQuestions } from '../chat'
+import { getChatRuntime, parseAskQuestions, renameSessionTitle, deleteSessionFully } from '../chat'
 import { acceptPastedAttachment } from '../attachments'
 import { ensureSession, getSession, listSessions, save as saveProject, setSessionArchived } from '../chat-store'
 import type { StoredSession } from '../chat-store'
-import { resolveDefaultEffort, resolveModelRefForSend } from '../model-resolve'
-import { getPersona } from '../personas'
+import { activeModelRef, listEnabledModels, resolveDefaultEffort, resolveModelRefForSend } from '../model-resolve'
+import { getPersona, listPersonas } from '../personas'
+import { listTasks, previewSchedule } from '../tasks'
+import { getConfig } from '../config'
 import { deleteSecretsByPrefix, setSecret } from '../secrets'
 import type { Message } from '../../providers/types'
 import { isEffortLevel } from '../../../shared/effort'
@@ -101,7 +103,12 @@ const PROTOCOL_CAPABILITIES = [
   'rename-device',
   'self-revoke',
   'session-archive',
-  'attachments'
+  'attachments',
+  'personas',
+  'session-delete',
+  'session-rename',
+  'tasks',
+  'models'
 ] as const
 
 /** 附件上传的传输上限（读字节缓冲的硬顶；类型/体积的细口径在 attachments.inspect 里，超限降级为位置注入）。 */
@@ -305,6 +312,26 @@ function personaDisplayName(personaId: string | undefined): string | null {
   return getPersona(personaId)?.name ?? null
 }
 
+/**
+ * 会话是否有未决交互卡（设备端列表「待操作」角标）：与 projectMessages 同一口径——
+ * 边车 asks/plans 里存在无终态（值为 undefined）的卡即未决。挂载请求卡不入历史，不在此列。
+ */
+function pendingCardOf(s: StoredSession): boolean {
+  // asks/plans 边车只记录已决的卡(键缺失 = 未决):与 projectMessages 同口径,扫历史找无终态卡
+  for (const m of s.messages) {
+    if (m.role !== 'assistant' || typeof m.content === 'string') continue
+    for (const p of m.content) {
+      if (p.type !== 'tool_use') continue
+      if (p.name === 'ask_user' && s.asks?.[p.id] === undefined) return true
+      if (p.name === 'exit_plan' && s.plans?.[p.id] === undefined) {
+        const plan = (p.input as { plan?: unknown } | null)?.plan
+        if (typeof plan === 'string' && plan.trim()) return true
+      }
+    }
+  }
+  return false
+}
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://local')
   const method = req.method ?? 'GET'
@@ -412,6 +439,34 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 200, { path: att.path, name: att.name, kind: att.kind })
     }
 
+    // GET /api/personas：启用中的角色清单（设备端「新建对话选角色」用；id/name/description）。
+    if (method === 'GET' && url.pathname === '/api/personas')
+      return json(res, 200, {
+        personas: listPersonas(false)
+          .filter((p) => p.enabled)
+          .map((p) => ({ id: p.id, name: p.name, description: p.description }))
+      })
+
+    // GET /api/tasks：定时任务只读清单（创建/编辑不在设备端 v1 面）。
+    if (method === 'GET' && url.pathname === '/api/tasks')
+      return json(res, 200, {
+        tasks: listTasks().map((t) => ({
+          id: t.id,
+          title: t.title,
+          status: typeof t.status === 'string' ? t.status : 'active',
+          schedule:
+            t.schedule?.kind === 'once'
+              ? { kind: 'once', at: typeof t.schedule.at === 'string' ? t.schedule.at : '' }
+              : { kind: 'recurring', cron: typeof t.schedule.cron === 'string' ? t.schedule.cron : '' },
+          scheduleText: previewSchedule(t.schedule, getConfig().locale === 'en' ? 'en' : 'zh-CN'),
+          ...(t.sessionId ? { sessionId: t.sessionId } : {})
+        }))
+      })
+
+    // GET /api/models：可用模型清单 + 当前全局默认（send 的 modelRef 可从中取值；切换后本对话固定用它）。
+    if (method === 'GET' && url.pathname === '/api/models')
+      return json(res, 200, { models: listEnabledModels(), active: activeModelRef() })
+
     // GET /api/info：版本、主机名、平台、是否首次运行（首次运行 = 还没有任何顶层会话；
     // 成员会话（子智能体）与 /api/sessions 列表同口径过滤，避免「列表空但 firstRun=false」的矛盾）
     if (method === 'GET' && url.pathname === '/api/info')
@@ -425,7 +480,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       })
 
     // GET /api/sessions：会话列表（转发 chat-store；成员会话不进手机列表，与 hub /list 同口径）。
-    // personaName / lastMessage 供设备端列表的角色徽标与最后消息摘要（服务端解析，设备端无需角色清单接口）
+    // personaName 供角色徽标；focusRoot 供目录分组；pendingCard 供「待操作」角标（asks/plans 边车判定）；
+    // lastMessage 供摘要。排序分类由设备端按这些字段自定（服务端恒按 updatedAt 倒序给全量）。
     if (method === 'GET' && url.pathname === '/api/sessions') {
       const rt = getChatRuntime()
       const all = listSessions()
@@ -433,15 +489,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .map((s) => {
           const pn = personaDisplayName(s.personaId)
-          const last = lastVisibleText(getSession(s.id)?.messages ?? [])
+          const stored = getSession(s.id)
+          const last = lastVisibleText(stored?.messages ?? [])
           return {
             id: s.id,
             title: s.title,
             personaId: s.personaId,
             ...(pn ? { personaName: pn } : {}),
+            ...(s.focusRoot ? { focusRoot: s.focusRoot } : {}),
             updatedAt: s.updatedAt,
             busy: rt?.isBusy(s.id) ?? false,
             archived: s.archived === true,
+            ...(stored ? { pendingCard: pendingCardOf(stored) } : {}),
             ...(last ? { lastMessage: last } : {})
           }
         })
@@ -454,11 +513,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       })
     }
 
-    // POST /api/sessions：新建空会话（可选 name 仅作提示——标题仍由桌面端 deriveTitle 首发时生成）。
-    // 转发 chat-store 既有函数（ensureSession + saveProject，与 chat:create-session 同源），不新增语义。
+    // POST /api/sessions：新建空会话（可选 personaId 选定角色——绑定沿桌面语义：首发落库后不再改）。
+    // 标题仍由桌面 deriveTitle 首发时派生，改名走 /rename。转发 chat-store 既有函数
+    // （ensureSession + saveProject，与桌面 chat:create-session 同源），不新增语义。
     if (method === 'POST' && url.pathname === '/api/sessions') {
+      const body = await readJson<{ personaId?: unknown }>(req)
+      const personaId = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined
+      if (personaId && !getPersona(personaId)) return json(res, 400, { error: '角色不存在或已删除。' })
       const id = `sess_${Date.now().toString(36)}_${randomInt(0, 36 ** 4).toString(36)}`
-      ensureSession(id)
+      ensureSession(id, personaId ? { personaId } : undefined)
       saveProject(id)
       return json(res, 200, { id })
     }
@@ -607,8 +670,31 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return json(res, 200, { ok: true, archived: body.archived })
     }
 
+    // POST /api/sessions/:id/rename：重命名对话（转调 chat:rename-session 同一实现；空标题=恢复自动派生）。
+    const mRen = url.pathname.match(/^\/api\/sessions\/([^/]+)\/rename$/)
+    if (mRen && method === 'POST') {
+      const renSid = decodeSegment(mRen[1])
+      if (renSid === null || !getSession(renSid)) return json(res, 404, { error: '会话不存在。' })
+      const body = await readJson<{ title?: unknown }>(req)
+      if (typeof body?.title !== 'string') return json(res, 400, { error: '缺少 title 字符串。' })
+      const r = renameSessionTitle(renSid, body.title)
+      if (!r) return json(res, 404, { error: '会话不存在。' })
+      return json(res, 200, { ok: true, title: r.title })
+    }
+
+    // DELETE /api/sessions/:id：删除对话（转调 chat:delete-session 同一实现——成员会话一并删、
+    // 在其中运行的定时任务改为独立运行；进行中的回合先中止。桌面确认语义由设备端 UI 承担）。
+    const mDelSess = url.pathname.match(/^\/api\/sessions\/([^/]+)$/)
+    if (mDelSess && method === 'DELETE') {
+      const delSid = decodeSegment(mDelSess[1])
+      if (delSid === null || !getSession(delSid)) return json(res, 404, { error: '会话不存在。' })
+      if (!deleteSessionFully(delSid)) return json(res, 503, { error: 'Deva 还没准备好，请稍后再试。' })
+      return json(res, 200, { ok: true })
+    }
+
     // GET /api/sessions/:id：单个会话元信息（设计 §3.3 表补齐;pendingInserts v1 恒空——
     // 插入消息走 send 的 busy→insert 回退,不落独立队列）。带 query 不再落 404:query 一律忽略。
+    // model/effort = 本对话当前固定的模型与思考等级（send 显式指定即落档）。
     const mOne = url.pathname.match(/^\/api\/sessions\/([^/]+)$/)
     if (mOne && method === 'GET') {
       const oneId = decodeSegment(mOne[1])
@@ -623,9 +709,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         title: one.title,
         personaId: one.personaId,
         ...(onePn ? { personaName: onePn } : {}),
+        ...(one.focusRoot ? { focusRoot: one.focusRoot } : {}),
+        ...(one.model ? { model: one.model } : {}),
+        ...(one.effort ? { effort: one.effort } : {}),
         busy,
         archived: one.archived === true,
         pendingInserts: [],
+        pendingCard: pendingCardOf(one),
         ...(oneLast ? { lastMessage: oneLast } : {})
       })
     }

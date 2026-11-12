@@ -1565,6 +1565,24 @@ export function onSessionPurge(cb: (sessionId: string) => void): () => void {
   sessionPurgeListeners.add(cb)
   return () => sessionPurgeListeners.delete(cb)
 }
+
+/**
+ * 通用设备通道的会话重命名/删除委托：registerChatIpc 装载后由闭包内实现回填（与 chat:rename-session /
+ * chat:delete-session 完全同一实现——桌面与通道不复制规则）。装载前调用返回 null / no-op。
+ */
+let sessionRenamer: ((sessionId: string, title: string) => { title: string } | null) | null = null
+let sessionDeleter: ((sessionId: string) => void) | null = null
+
+export function renameSessionTitle(sessionId: string, title: string): { title: string } | null {
+  return sessionRenamer?.(sessionId, title) ?? null
+}
+
+/** 删除会话；委托未装载（通道先于 chat IPC 就绪）返回 false。 */
+export function deleteSessionFully(sessionId: string): boolean {
+  if (!sessionDeleter) return false
+  sessionDeleter(sessionId)
+  return true
+}
 /** 正在跑回合的会话 → 这一轮开始的时刻（member_status 据此报「已用多久」）。 */
 const busySince = new Map<string, number>()
 
@@ -5955,21 +5973,22 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
   // 取首条用户消息（展示用原文，不含随消息附带的提醒）。会话对象全局缓存为同一份，回合进行中改名也不会被
   // 这一轮后续落盘冲掉；自动派生只在标题为空时写，不会覆盖用户起的名字。不改 updatedAt（改名不算新活动，
   // 列表顺序不变）。尚未建档的惰性会话查不到 → null。
-  ipcMain.handle(
-    'chat:rename-session',
-    (_e, payload: ChatRenameSessionRequest): { title: string } | null => {
-      const session = getSession(payload.sessionId)
-      if (!session) return null
-      let title = String(payload.title ?? '').replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX)
-      if (!title) {
-        const first = displayOf(session).find((m) => m.role === 'user' && !m.notify)
-        if (first?.role === 'user')
-          title = deriveTitle(first.text) || deriveTitle(first.attachments.map((a) => a.name).join(' '))
-      }
-      session.title = title
-      saveProject(payload.sessionId)
-      return { title }
+  const renameImpl = (sessionId: string, title: string): { title: string } | null => {
+    const session = getSession(sessionId)
+    if (!session) return null
+    let t = String(title ?? '').replace(/\s+/g, ' ').trim().slice(0, TITLE_MAX)
+    if (!t) {
+      const first = displayOf(session).find((m) => m.role === 'user' && !m.notify)
+      if (first?.role === 'user')
+        t = deriveTitle(first.text) || deriveTitle(first.attachments.map((a) => a.name).join(' '))
     }
+    session.title = t
+    saveProject(sessionId)
+    return { title: t }
+  }
+  sessionRenamer = renameImpl
+  ipcMain.handle('chat:rename-session', (_e, payload: ChatRenameSessionRequest): { title: string } | null =>
+    renameImpl(payload.sessionId, payload.title)
   )
 
   // 归档 / 取消归档：只改这一个标记并落盘，不动 updatedAt（列表顺序不变）。尚未建档的惰性会话回 ok:false。
@@ -6163,16 +6182,17 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
 
   // 删除某会话（含会话级授权）。id 全局唯一 → 按 id 删。主对话连同它的成员会话一并删除；在它里面运行的定时任务
   // 改为独立运行（任务与任务对话保留，任务对话回到左侧列表）。
-  ipcMain.handle(
-    'chat:delete-session',
-    (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
-      const members = getSession(sessionId)?.members ?? []
-      purgeSession(sessionId)
-      for (const m of members) purgeSession(m.sessionId)
-      releaseTasksOwnedBy(sessionId)
-      return { ok: true }
-    }
-  )
+  const deleteImpl = (sessionId: string): void => {
+    const members = getSession(sessionId)?.members ?? []
+    purgeSession(sessionId)
+    for (const m of members) purgeSession(m.sessionId)
+    releaseTasksOwnedBy(sessionId)
+  }
+  sessionDeleter = deleteImpl
+  ipcMain.handle('chat:delete-session', (_e, sessionId: string, _workspaceRoot: string | null): { ok: true } => {
+    deleteImpl(sessionId)
+    return { ok: true }
+  })
 
   // 移除成员（成员卡片的「移除成员」）：不再派任务给它，正在进行的任务中止；成员会话保留（可从名单里恢复）。
   // 主智能体经下一次随消息下发的名单更新得知。
