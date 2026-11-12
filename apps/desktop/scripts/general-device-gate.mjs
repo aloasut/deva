@@ -1,7 +1,8 @@
 // 通用设备通道协议回归门禁(手工/CI 均可运行)。
 // 编码了协议不变量:版本化、设备名唯一不烧码、配对码原子消费、会话级流三帧、
 // busy→insert 回退、忙时归档 409、lastMessage 列表字段、单会话 GET 带 query、
-// 回合级流未知 turnId 404、Origin 端口校验、归档/取消归档、自助吊销即刻 401。
+// 回合级流未知 turnId 404、Origin 端口校验、归档/取消归档、自助吊销即刻 401、
+// 回填/列表摘要不露引擎标记(⟦deva:*⟧ 投影过滤)。
 //
 // 前置(另开两个终端):
 //   1. 桌面实例:DEVA_HOME=<测试家目录> electron --remote-debugging-port=9227 \
@@ -219,6 +220,19 @@ ok('⑳a 任务清单为数组', Array.isArray(tk.tasks), `n=${(tk.tasks || []).
 const ml = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/models -H "Authorization: Bearer ${T5}"`).toString())
 const hasMock = (ml.models || []).some((m) => m.ref === 'mockprov:mock-model')
 ok('⑳b 模型清单含 active 默认', Array.isArray(ml.models) && hasMock && typeof ml.active === 'string', `n=${(ml.models || []).length}`)
+
+// ㉑ 投影口径:回填与列表摘要不含引擎标记(⟦deva:compaction⟧/⟦deva:auto⟧/⟦deva:notify⟧——压缩摘要/自愈
+// 引导/任务通知不当人话;压缩「只插摘要不删消息」后这类消息只增不减,投影不过滤就会把带标记原文当
+// 用户气泡回给手机)。门禁实例没有标记会话时平凡为真;真标记场景的专验证(隔离 DEVA_HOME 预制标记
+// 会话 → 起实例 → 断言回填条数/序列/摘要)见 android-client/design.mdx 第七轮轨迹。
+let leak = ''
+const scanList = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}"`).toString())
+for (const s of scanList.sessions) {
+  if (JSON.stringify(s).includes('⟦deva:')) leak = leak || `列表 ${s.id}`
+  const ms = JSON.parse(execSync(`curl -s "http://127.0.0.1:4317/api/sessions/${s.id}/messages?limit=2000" -H "Authorization: Bearer ${T5}"`).toString())
+  if ((ms.messages ?? []).some((m) => JSON.stringify(m).includes('⟦deva:'))) leak = leak || `回填 ${s.id}`
+}
+ok('㉑ 回填/列表摘要不露引擎标记 ⟦deva:*⟧', !leak, leak)
 
 console.log(`\n===== ${pass}/${pass + fail} PASS =====`)
 process.exit(fail ? 1 : 0)
