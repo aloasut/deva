@@ -62,7 +62,15 @@ curl -s -X POST "http://$H/api/sessions/$SID/answer" \
   -H "Authorization: Bearer $CURL_TOKEN" -H 'content-type: application/json' \
   -d '{"key":"<ask_user.key>","kind":"ask","payload":{"answers":["Kotlin"]}}'
 
-# 7. 下载交付文件(收到 present_files 交付后;路径必须在交付白名单内)
+# 7. 发附件(可选):先上传字节拿白名单路径,再随 send 的 attachments[] 带回
+curl -s -X POST "http://$H/api/attachments?name=photo.png" \
+  -H "Authorization: Bearer $CURL_TOKEN" -H 'content-type: image/png' \
+  --data-binary @photo.png          # → {"path":"/var/…/photo.png","name":"photo.png","kind":"image"}
+curl -s -X POST "http://$H/api/sessions/$SID/send" \
+  -H "Authorization: Bearer $CURL_TOKEN" -H 'content-type: application/json' \
+  -d '{"text":"看这张图","attachments":["<上一步的 path>"]}'
+
+# 8. 下载交付文件(收到 present_files 交付后;路径必须在交付白名单内)
 curl -s -o out.png "http://$H/api/files?path=<urlencoded 路径>&session=$SID" \
   -H "Authorization: Bearer $CURL_TOKEN"
 ```

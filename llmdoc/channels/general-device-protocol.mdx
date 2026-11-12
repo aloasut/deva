@@ -69,7 +69,7 @@ Deva 是一个**本地优先**的桌面 AI 工作台(Electron):模型调用、�
 `GET /api/info` 与配对响应均携带:
 
 ```json
-{ "protocol": 1, "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device"] }
+{ "protocol": 1, "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device","self-revoke","session-archive","attachments"] }
 ```
 
 - `protocol` 不匹配或所需 capability 缺失时,设备端应提示升级,而非猜测语义。
