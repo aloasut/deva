@@ -13,7 +13,7 @@
 import { execSync } from 'node:child_process'
 import { spawn } from 'node:child_process'
 
-const CDP = `http://127.0.0.1:${process.argv[2] ?? 9229}`
+const CDP = `http://127.0.0.1:${process.argv[2] ?? 9227}`
 const RUN = Math.random().toString(36).slice(2, 8)
 
 /** 经 CDP 调桌面渲染层 window.deva.general.pairCode() 取当前 6 位码。 */
