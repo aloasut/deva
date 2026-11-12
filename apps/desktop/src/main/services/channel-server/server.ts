@@ -18,7 +18,7 @@ import type { ChannelState } from '../remote/types'
 import { deviceIdForToken, invalidateTokenCache } from './auth'
 import { noteDeviceSeen, noteDeviceStream, dropDevice } from './activity'
 import { addDevice, getGeneralServerConfig, removeDevice, sanitizeDeviceName, type GeneralServerConfig } from './config'
-import { consumePairCodeIfMatch, notePairFailure, pairAttemptAllowed } from './pairing'
+import { consumePairCodeIfMatch, notePairFailure, pairAttemptAllowed, restorePairCode } from './pairing'
 import { canAdmit, closeDeviceConnections, openSessionStream, openTurnStream, turnRegistered } from './sse'
 
 /**
@@ -329,15 +329,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       )
         return json(res, 409, { error: `设备名「${name}」已被占用，请换一个名字并重新生成配对码。` })
       // 一次性原子消费：校验+作废同步完成，并发同码有且只有一个成功（设计 §3.2）
-      if (!consumePairCodeIfMatch(code)) {
+      const consumed = consumePairCodeIfMatch(code)
+      if (!consumed) {
         notePairFailure()
         return json(res, 400, { error: '配对码不正确或已过期，请在电脑端重新生成。' })
       }
       const deviceId = genDeviceId()
       const token = randomBytes(32).toString('base64url')
       const saved = await setSecret(`general:${deviceId}:token`, token)
-      if (!saved.ok)
+      if (!saved.ok) {
+        // 密钥存储失败不再白烧码（§6）：码在本请求手里、期间不可能被并发消费——
+        // 原有效期恢复，设备同码重试即得；期间桌面若已出新码则丢弃（与旧行为一致）
+        restorePairCode(code, consumed.expiresAt)
         return json(res, 500, { error: '系统密钥存储不可用，无法安全保存设备凭据。' })
+      }
       addDevice({ id: deviceId, name, pairedAt: Date.now(), enabled: true })
       invalidateTokenCache()
       hooksRef?.onDevicePaired?.(name)

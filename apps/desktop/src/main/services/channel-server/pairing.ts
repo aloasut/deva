@@ -33,17 +33,27 @@ export function cancelPairCode(): void {
 /**
  * 配对码一次性原子消费：校验与作废在同一步同步完成（JS 单线程，无 await 间隙），
  * 并发同码配对有且只有一个成功——堵死「校验 → 异步落密钥 → 作废」窗口期的双重接入竞态。
- * 返回是否消费成功。
+ * 返回被消费码的原有效期（供 setSecret 失败后 restorePairCode 回滚）；未消费返回 null。
  */
-export function consumePairCodeIfMatch(code: string): boolean {
-  if (!current) return false
+export function consumePairCodeIfMatch(code: string): { expiresAt: number } | null {
+  if (!current) return null
   if (current.expiresAt < Date.now()) {
     current = null
-    return false
+    return null
   }
-  if (code !== current.code) return false
+  if (code !== current.code) return null
+  const { expiresAt } = current
   current = null
-  return true
+  return { expiresAt }
+}
+
+/**
+ * 配对成功后的密钥存储失败的回滚（§6 白烧码）：码在我们手里、期间不可能被别人消费——
+ * 恢复原有效期，设备同码重试即得。仅当期间桌面未再出新码（current 仍为 null）才恢复；
+ * 已出新码则丢弃（与旧行为一致，码死）。JS 单线程，判定与赋值无竞态。
+ */
+export function restorePairCode(code: string, expiresAt: number): void {
+  if (current === null) current = { code, expiresAt }
 }
 
 /** 配对失败（码不对/已过期）记一次；连续失败触发全局熔断。 */

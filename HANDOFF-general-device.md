@@ -7,7 +7,8 @@
 
 > **处置状态(2026-11-12 第二轮)**:下列清单已按 P1–P2 推进一轮并全量自检通过(协议门禁 18/18 + typecheck + 安卓双构建)。
 > - **已修**:§2 配对成功桌面通知、§3 设备端自助吊销(协议端点+设置页入口)、§4 会话页 personaName/lastMessage + 归档操作、§5 启停均失效 token 缓存、§7 busy 409 文案统一、§8 回合级流未知 turnId 404、§9 Origin 端口校验、§10 firstRun 过滤成员会话、§12 单会话 GET 忽略 query、§13 ChatScreen 稳定 key + delta 合帧、§15 FilesScreen(前轮已删)、§16 模型链(前轮已统一)、§四 文档(personaId/workspaceRoot 标注 v2、无归属 notice 留白记录)。
-> - **仍留白(v2 或接受现状)**:§6 白烧码(低频,顺序调换有并发竞态风险,维持现状)、§11 无归属 notice(v1 无影响,协议留白)、§14 Coil 迁移(可选,LruCache 已够)。
+> - **仍留白(v2 或接受现状)**:§11 无归属 notice(v1 无影响,协议留白)、§14 Coil 迁移(可选,LruCache 已够)。
+> - **§6 白烧码已修(第三轮)**:消费保持先行(不改并发语义),setSecret 失败时 `restorePairCode` 按原有效期恢复码(仅当期间桌面未再出新码)——设备同码重试即得,无交接文档担心的并发竞态。验证边界:恢复路径需 safeStorage 失败才触发,门禁无法模拟;逻辑为两行守卫(typecheck+全量门禁回归覆盖消费链路)。
 > - 门禁脚本扩展至 18 项(⑥–⑭ 为本轮新增);修复了脚本自身的两处取码缺陷(双重 `.code`、§③b 漏 await 导致悬空出码顶替并发码)。
 > - **真机回归(PryFox VM,同日)**:新 APK(md5 对账一致)重配后全链通过——深链预填重配、会话列表 lastMessage/摘要行、慢流回合流式渲染(delta 合帧后不回退)、done 收尾(停止→发送按钮切换)、长按归档/取消归档 + 已归档徽标、设置页「吊销本设备」→ App 回未配对 + 桌面设备列表同步移除。
 > - **真机观察(既有,非本轮回归)→ 第三轮已修**:①本机发送双用户气泡竞态(turn_start 先于 send 响应)→ `pendingSendText` 在途标记修复,真机确认单气泡;②EventStream 看门狗 sleep 中断的 InterruptedException 噪音日志 → 已包 InterruptedException 吞掉。
