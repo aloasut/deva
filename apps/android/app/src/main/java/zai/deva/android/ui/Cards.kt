@@ -1,6 +1,8 @@
 package zai.deva.android.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,6 +35,9 @@ import org.json.JSONObject
 import zai.deva.android.core.AskQuestion
 import zai.deva.android.core.CardPayload
 import zai.deva.android.core.TimelineItem
+
+/** 可点区域下限（设计 §5：按钮/行 ≥44dp）。 */
+private val MinTouch = Modifier.heightIn(min = 44.dp)
 
 /**
  * 三类交互卡（设计 §5-4）：问答（单选/多选/自由输入）、计划审阅（批准/继续完善/取消）、
@@ -75,6 +80,7 @@ fun CardRow(card: TimelineItem.Card, onAnswer: (kind: String, key: String, paylo
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AskCardBody(p: CardPayload.Ask, onAnswer: (String, String, JSONObject) -> Unit) {
     // 每题：选中项集合 + 自由输入；提交时答案与题目对齐（answers[i] 对应第 i 题）
@@ -91,6 +97,7 @@ private fun AskCardBody(p: CardPayload.Ask, onAnswer: (String, String, JSONObjec
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 enabled = !submitting && allAnswered,
+                modifier = MinTouch,
                 onClick = {
                     submitting = true
                     val answers = JSONArray()
@@ -108,6 +115,7 @@ private fun AskCardBody(p: CardPayload.Ask, onAnswer: (String, String, JSONObjec
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QuestionBlock(qi: Int, q: AskQuestion, selected: MutableState<List<Set<String>>>, freeText: MutableState<List<String>>) {
     Column {
@@ -116,7 +124,22 @@ private fun QuestionBlock(qi: Int, q: AskQuestion, selected: MutableState<List<S
             style = MaterialTheme.typography.bodyMedium
         )
         q.options.forEach { opt ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            // 整行可点（不只点控件本身），可点区域 ≥44dp（设计 §5）
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp)
+                    .combinedClickable(onClick = {
+                        selected.value = selected.value.toMutableList().also {
+                            it[qi] = if (q.multi) {
+                                if (opt in selected.value[qi]) selected.value[qi] - opt else selected.value[qi] + opt
+                            } else {
+                                setOf(opt)
+                            }
+                        }
+                    })
+            ) {
                 when {
                     q.multi -> Checkbox(
                         checked = opt in selected.value[qi],
@@ -169,18 +192,27 @@ private fun PlanCardBody(p: CardPayload.Plan, onAnswer: (String, String, JSONObj
                 modifier = Modifier.fillMaxWidth()
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = {
-                    onAnswer("plan", p.key, JSONObject().put("decision", "keep").put("feedback", feedback))
-                }) { Text("发送修改意见") }
-                OutlinedButton(onClick = { keepMode = false }) { Text("返回") }
+                Button(
+                    onClick = {
+                        onAnswer("plan", p.key, JSONObject().put("decision", "keep").put("feedback", feedback))
+                    },
+                    modifier = MinTouch
+                ) { Text("发送修改意见") }
+                OutlinedButton(onClick = { keepMode = false }, modifier = MinTouch) { Text("返回") }
             }
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { onAnswer("plan", p.key, JSONObject().put("decision", "approve")) }) {
+                Button(
+                    onClick = { onAnswer("plan", p.key, JSONObject().put("decision", "approve")) },
+                    modifier = MinTouch
+                ) {
                     Text("批准并执行")
                 }
-                OutlinedButton(onClick = { keepMode = true }) { Text("继续完善") }
-                OutlinedButton(onClick = { onAnswer("plan", p.key, JSONObject().put("decision", "ignore")) }) {
+                OutlinedButton(onClick = { keepMode = true }, modifier = MinTouch) { Text("继续完善") }
+                OutlinedButton(
+                    onClick = { onAnswer("plan", p.key, JSONObject().put("decision", "ignore")) },
+                    modifier = MinTouch
+                ) {
                     Text("取消")
                 }
             }

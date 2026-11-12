@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -29,6 +30,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -54,15 +56,21 @@ import zai.deva.android.core.SessionMeta
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit) {
+    // onOpenSettings 既用于空态引导，也用于错误横幅的「去设置」（P5 错误态）
     val server by AppGraph.current.collectAsState()
     val sessions by AppGraph.sessions.sessions.collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var creating by remember { mutableStateOf(false) }
+    var refreshError by remember { mutableStateOf<String?>(null) }
 
-    // 进入 / 回到首页时刷新列表
+    // 进入 / 回到首页时刷新列表（失败给横幅：可重试；401 引导去设置重新配对）
     LaunchedEffect(Unit) {
-        AppGraph.client()?.let { client -> AppGraph.sessions.refresh(client) }
+        val client = AppGraph.client() ?: return@LaunchedEffect
+        when (val r = AppGraph.sessions.refresh(client)) {
+            is ApiResult.Err -> refreshError = r.message
+            is ApiResult.Ok -> refreshError = null
+        }
     }
 
     Scaffold(
@@ -121,6 +129,39 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit) {
                 contentPadding = PaddingValues(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // 错误横幅（P5 错误态）：连不上 / 401 都在此提示，不用 snackbar 一闪而过
+                refreshError?.let { msg ->
+                    item(key = "error") {
+                        ElevatedCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.elevatedCardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        ) {
+                            Row(modifier = Modifier.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    msg,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (msg.contains("重新配对")) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                if (msg.contains("重新配对")) {
+                                    TextButton(onClick = onOpenSettings) { Text("去设置") }
+                                }
+                                TextButton(onClick = {
+                                    scope.launch {
+                                        val client = AppGraph.client() ?: return@launch
+                                        when (val r = AppGraph.sessions.refresh(client)) {
+                                            is ApiResult.Err -> refreshError = r.message
+                                            is ApiResult.Ok -> refreshError = null
+                                        }
+                                    }
+                                }) { Text("重试") }
+                            }
+                        }
+                    }
+                }
                 items(sessions, key = { it.id }) { s ->
                     SessionRow(s) { onOpenChat(s.id) }
                 }

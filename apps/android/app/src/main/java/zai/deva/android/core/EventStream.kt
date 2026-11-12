@@ -62,9 +62,14 @@ class EventStream(
                 if (lastEventId > 0) b.header("Last-Event-ID", lastEventId.toString())
                 val call = http.newCall(b.build())
                 abortHandle = call
+                var unauthorized = false
                 try {
                     call.execute().use { resp ->
-                        if (resp.code != 200) {
+                        // 凭据无效不再空转重连：报 unauthorized 终态，UI 引导去设置重新配对
+                        if (resp.code == 401 || resp.code == 403) {
+                            unauthorized = true
+                            onState("unauthorized")
+                        } else if (resp.code != 200) {
                             onState("reconnecting")
                         } else {
                             onState("live")
@@ -102,7 +107,7 @@ class EventStream(
                 } finally {
                     abortHandle = null
                 }
-                if (!running.get()) break
+                if (unauthorized || !running.get()) break
                 if (!reconnectEnabled()) {
                     onState("stopped")
                     break

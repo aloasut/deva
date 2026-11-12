@@ -35,7 +35,11 @@ class MainActivity : ComponentActivity() {
                         }
                         composable("chat/{sid}") { entry ->
                             val sid = entry.arguments?.getString("sid").orEmpty()
-                            ChatScreen(sessionId = sid, onBack = { nav.popBackStack() })
+                            ChatScreen(
+                                sessionId = sid,
+                                onBack = { nav.popBackStack() },
+                                onOpenSettings = { nav.navigate("settings") }
+                            )
                         }
                         composable("settings") {
                             SettingsScreen(onBack = { nav.popBackStack() })

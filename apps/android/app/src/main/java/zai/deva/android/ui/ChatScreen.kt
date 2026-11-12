@@ -1,6 +1,8 @@
 package zai.deva.android.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +30,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,6 +42,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
@@ -53,15 +58,16 @@ import zai.deva.android.core.TimelineItem
  * 底部固定输入框；停止按钮只在有活动回合时出现。断线由 EventStream 自动退避重连，
  * replay_reset 触发整体回填（SessionStore.open(force=true)）。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ChatScreen(sessionId: String, onBack: () -> Unit) {
+fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit = {}) {
     val items by AppGraph.sessions.timeline(sessionId).collectAsState()
     val streamState by AppGraph.sessions.streamState.collectAsState()
     val activeTurn by AppGraph.sessions.activeTurnFlow(sessionId).collectAsState()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
+    var loadError by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
 
     val client = AppGraph.client()
@@ -80,13 +86,14 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
         Unit
     }
 
-    // 进入会话：回填历史；若有活动回合（发送时切走又回来）恢复订阅
+    // 进入会话：回填历史（失败给整屏错误态，可重试 / 401 引导去设置）；有活动回合则恢复订阅
     LaunchedEffect(sessionId) {
         if (client == null) return@LaunchedEffect
         when (val r = AppGraph.sessions.open(client, sessionId)) {
-            is ApiResult.Err -> snackbar.showSnackbar(r.message)
-            else -> Unit
+            is ApiResult.Err -> loadError = r.message
+            is ApiResult.Ok -> loadError = null
         }
+        if (loadError != null) return@LaunchedEffect
         AppGraph.sessions.currentTurn(sessionId)?.let { turn ->
             AppGraph.sessions.watch(sessionId, turn, onReplayReset = {
                 AppGraph.scope.launch {
@@ -114,8 +121,14 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
                         val title = AppGraph.sessions.sessions.value
                             .firstOrNull { it.id == sessionId }?.title
                         Text(title?.ifBlank { "对话" } ?: "对话", style = MaterialTheme.typography.titleMedium)
-                        if (activeTurn != null && streamState == "reconnecting") {
-                            Text(
+                        when {
+                            streamState == "unauthorized" -> Text(
+                                "凭据无效，点此去设置重新配对",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.combinedClickable(onClick = onOpenSettings)
+                            )
+                            activeTurn != null && streamState == "reconnecting" -> Text(
                                 "连接中断，正在重连…",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -133,6 +146,29 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
         snackbarHost = { SnackbarHost(snackbar) }
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad).imePadding()) {
+            if (items.isEmpty() && loadError != null) {
+                Column(
+                    modifier = Modifier.weight(1f).fillMaxWidth().padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(loadError ?: "", style = MaterialTheme.typography.bodyMedium, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (loadError?.contains("重新配对") == true) {
+                            TextButton(onClick = onOpenSettings) { Text("去设置") }
+                        }
+                        TextButton(onClick = {
+                            scope.launch {
+                                val c = AppGraph.client() ?: return@launch
+                                when (val r = AppGraph.sessions.open(c, sessionId, force = true)) {
+                                    is ApiResult.Err -> loadError = r.message
+                                    is ApiResult.Ok -> loadError = null
+                                }
+                            }
+                        }) { Text("重试") }
+                    }
+                }
+            } else {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -140,6 +176,7 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 items(items) { item -> TimelineRow(item, onAnswer, sessionId, snackbar) }
+            }
             }
 
             // Waiting 态（有未决卡）：输入框禁用并提示，防止用户打字却被静默丢弃（设计 §4 状态机）
@@ -208,6 +245,7 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TimelineRow(
     item: TimelineItem,
@@ -215,19 +253,32 @@ private fun TimelineRow(
     sessionId: String,
     snackbar: SnackbarHostState
 ) {
+    val copyScope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+    // 长按复制（设计 §5）：正文 / 思考 / 工具行都可用，复制后轻提示
+    fun copyOnLong(base: Modifier, text: String): Modifier = base.combinedClickable(
+        onClick = {},
+        onLongClick = {
+            clipboard.setText(AnnotatedString(text))
+            copyScope.launch { snackbar.showSnackbar("已复制") }
+        }
+    )
     when (item) {
-        is TimelineItem.Text -> Bubble(item.text, item.fromUser)
+        is TimelineItem.Text -> Bubble(item.text, item.fromUser, copyOnLong(Modifier, item.text))
         is TimelineItem.Thinking -> Text(
             item.text,
             style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+            modifier = copyOnLong(Modifier.fillMaxWidth().padding(horizontal = 4.dp), item.text)
         )
         is TimelineItem.Tool -> Text(
             item.summary?.let { "🔧 ${item.name} — $it" } ?: "🔧 正在 ${item.name}…",
             style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+            modifier = copyOnLong(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                item.summary?.let { "🔧 ${item.name} — $it" } ?: "🔧 正在 ${item.name}…"
+            )
         )
         is TimelineItem.Card -> CardRow(item, onAnswer)
         is TimelineItem.Error -> Text(
@@ -241,13 +292,14 @@ private fun TimelineRow(
 }
 
 @Composable
-private fun Bubble(text: String, fromUser: Boolean) {
+private fun Bubble(text: String, fromUser: Boolean, extra: Modifier = Modifier) {
     Box(Modifier.fillMaxWidth(), contentAlignment = if (fromUser) Alignment.CenterEnd else Alignment.CenterStart) {
         Text(
             text,
             style = MaterialTheme.typography.bodyLarge,
             color = if (fromUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier
+                .then(extra)
                 .widthIn(max = 300.dp)
                 .background(
                     if (fromUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,

@@ -19,6 +19,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // 交付约定（设计 P5）：release 也用 debug 签名，直接可安装；不配正式 keystore
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
