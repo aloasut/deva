@@ -1,96 +1,96 @@
 {
   "schema": "llmdoc.meta/v3",
   "baseline": {
-    "revision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f",
-    "verifiedAt": "2026-11-12T12:25:15.850Z"
+    "revision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a",
+    "verifiedAt": "2026-11-12T14:35:30.403Z"
   },
   "documents": {
     "runtime/process-model.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "runtime/ipc-contract.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "chat-engine/agent-loop.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "chat-engine/context-management.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "guardrails/tools-policy.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "guardrails/security-boundaries.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "extensions/skills.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "extensions/mcp.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "roles/role-semantics.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "roles/members.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "roles/scheduled-tasks.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "persistence/storage-layout.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "persistence/checkpoints-rewind.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/browser.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/remote-channels.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "ux/renderer-architecture.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "ux/input-contracts.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "ux/deliverables-media.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "release/release-and-update.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/remote-contract.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/telegram-adapter.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/remote-lifecycle.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/android-client-prereqs.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "android-client/design.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/general-device-protocol.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/general-device-rest-api.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/general-device-sse.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/general-device-pairing.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     },
     "channels/general-device-client-guide.mdx": {
-      "validatedRevision": "211cde1e7a649ad61b5a27325ecd2caf61cc026f"
+      "validatedRevision": "9e78de2a43fd8b3ab53f72877461bd5e37e37c7a"
     }
   },
   "convergence": {
