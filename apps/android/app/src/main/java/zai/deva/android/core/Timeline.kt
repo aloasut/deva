@@ -145,6 +145,9 @@ class TimelineBuilder {
             "turn_start" -> {
                 if (isOwnTurn) return // 自己发起的：发送时已乐观上屏
                 val user = data.optJSONObject("user") ?: return
+                // notify/quiet 轮不是用户说的话（后台任务通知/成员交差唤醒；桌面画系统行或不显示）：
+                // 与回填口径一致不画用户气泡（引擎标记消息在投影侧已过滤），active/busy 置位在 SessionStore 不受影响
+                if (user.optBoolean("notify") || user.optBoolean("quiet")) return
                 val text = user.optString("text")
                 if (text.isNotEmpty()) items.add(TimelineItem.Text(text, fromUser = true))
             }
