@@ -150,5 +150,26 @@ const rev = JSON.parse(execSync(`curl -s -X POST http://127.0.0.1:4317/api/devic
 const rev401 = execSync(`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4317/api/info -H "Authorization: Bearer ${T}"`).toString().trim()
 ok('⑭ 自助吊销 → ok + token 即刻 401', rev.ok === true && rev401 === '401', `revoke=${JSON.stringify(rev)} info=${rev401}`)
 
+// ⑮ 附件:上传(png 1x1)→ 带附件发送 → 回填报 attachments 计数;伪造路径 send 被忽略
+import { writeFileSync, mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64')
+const tmpPng = join(mkdtempSync(join(tmpdir(), 'deva-gate-')), 'gate.png')
+writeFileSync(tmpPng, PNG_1PX)
+const up = JSON.parse(execSync(`curl -s -X POST "http://127.0.0.1:4317/api/attachments?name=gate.png" -H "Authorization: Bearer ${T5}" -H 'content-type: image/png' --data-binary @${tmpPng}`).toString())
+ok('⑮a 上传返回白名单路径', typeof up.path === 'string' && up.kind === 'image', JSON.stringify(up).slice(0, 80))
+const badUp = JSON.parse(execSync(`curl -s -X POST "http://127.0.0.1:4317/api/attachments?name=x.png" -H "Authorization: Bearer ${T5}" --data-binary 'x'`).toString())
+ok('⑮b 缺 Content-Type 也可(兜 octet-stream)', typeof badUp.path === 'string' || (badUp.error && badUp.error.length > 0), JSON.stringify(badUp).slice(0, 60))
+const SID2 = JSON.parse(execSync(`curl -s -X POST http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}"`).toString()).id
+execSync(`curl -s -X POST "http://127.0.0.1:4317/api/sessions/${SID2}/send" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"text":"see attachment","attachments":["${up.path}"]}' > /dev/null`)
+// 伪造路径:未登记路径不读盘,只给模型「已忽略」note——不报错、不 500
+const fakeSend = execSync(`curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:4317/api/sessions/${SID2}/send" -H "Authorization: Bearer ${T5}" -H 'content-type: application/json' -d '{"text":"fake","attachments":["/etc/hostname"]}'`).toString().trim()
+ok('⑮c 伪造路径 send 不炸(200)', fakeSend === '200', `got ${fakeSend}`)
+await sleep(6000)
+const msgs = JSON.parse(execSync(`curl -s "http://127.0.0.1:4317/api/sessions/${SID2}/messages?limit=50" -H "Authorization: Bearer ${T5}"`).toString())
+const attCount = msgs.messages.filter((m) => m.role === 'user' && m.attachments > 0).length
+ok('⑮d 回填报 attachments 计数 ≥1', attCount >= 1, `count=${attCount}`)
+
 console.log(`\n===== ${pass}/${pass + fail} PASS =====`)
 process.exit(fail ? 1 : 0)
