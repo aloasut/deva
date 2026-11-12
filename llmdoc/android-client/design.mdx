@@ -143,6 +143,7 @@ data: {"sessionId":"...","turnId":"...","type":"text_delta","text":"..."}
 ### 实现超出设计的记录（防文档腐化，2026-11-12）
 
 - 设备在线态 online/lastSeenAt（§3.5 已回写）；会话列表过滤成员会话（与 hub 同口径）；发送模型解析链已抽 `model-resolve.resolveModelRefForSend` 供 hub 与通道同源；单设备 enabled 与改名；稳健性自加：错误契约（401→重新配对终态/403 白名单/409 忙）、FileSaver API 分档回落、SecureStore KeyStore 损坏自愈、图片预览 25MB cap+LruCache+EXIF、明文提示双落点。
+- **三方对拍遗留项四轮闭环（2026-11-12，交接文档史实收口）**：第一轮 5-agent 审查 P0/P1/P2（至 a28780c）；第二轮 P1–P2 加固（配对成功桌面通知、`POST /api/devices/self` 自助吊销、`POST /api/sessions/:id/archive` 忙时 409、Origin 端口校验、firstRun 过滤成员会话、列表 personaName/lastMessage、单会话 GET 忽略 query、回合级流未知 turnId 404、busy 409 文案统一 hub 同款、启停均失效 token 缓存、ChatScreen 稳定 key+delta 合帧 30fps）；第三轮 **§1 附件上传落 v1**（原 v2 预留，`POST /api/attachments` 与桌面粘贴同管道+安卓选图上传）并修复真机观察项（双用户气泡竞态→pendingSendText 在途标记、EventStream 看门狗中断噪音）；第四轮 **§6 白烧码修复**（消费保持先行，setSecret 失败按原有效期恢复码）。协议门禁扩至 22 项（`apps/desktop/scripts/general-device-gate.mjs`）。
 
 ## 4. 安卓端结构
 
@@ -220,6 +221,8 @@ app/src/main/java/zai/deva/android/
 - 多服务器互联（frog-bot 的 relay 能力）；
 - 公网中继、邀请码分发、多用户；
 - iOS / 桌面端改动。（2026-11-12 通用化修订注：桌面端改动已按 §8 允许面发生——channel-server/、preload `general:*`、机器人面板入口；iOS 因协议通用化边际成本大降，移入 v2 候选）
+- **Coil 迁移（2026-11-12 处置：不引入）**：图片预览 LruCache+EXIF 最小方案已真机验证且无缺陷，Coil 只省代码、代价是新依赖+重验；翻盘条件=出现大量图片场景（相册/动图/缩略图网格）。
+- **notice 无 sessionId 归属的协议扩展（2026-11-12 处置：不做）**：v1 所有通知都带 sessionId，该空隙无真实消费者；最像候选的场景（吊销通知到设备）已由 401→`unauthorized` 终态覆盖；翻盘条件=出现具体的无归属通知需求，届时按实际形状设计（广播/定向、是否进 ring 回放）。
 
 ## 10. 门禁自检（本文通过条件）
 
@@ -231,3 +234,10 @@ app/src/main/java/zai/deva/android/
 - [x] 风险表覆盖传输、断线、版本兼容、保活四类真实问题。
 
 **门禁结论：通过（2026-11-12）**。放行 P0→P5，实现中偏离本文需先改本文。
+
+**协议回归门禁**：`node apps/desktop/scripts/general-device-gate.mjs [CDP端口=9227]`，22 项不变量（用法/前置见脚本头注释：隔离 DEVA_HOME 桌面实例 + OpenAI 兼容 mock 模型 127.0.0.1:43190 + 仓库已构建）。改动 channel-server 后必须全绿。
+
+**真机（PryFox VM）验证注意（交接文档坑清单收口）**：
+- gradle 守护进程增量缓存跨进程持久：编译报错引用磁盘上不存在的旧签名、或 APK md5 不变却 BUILD SUCCESSFUL 时，`rm -rf app/build/kotlin` + `--rerun-tasks` 强制真编译；装到设备后 `adb shell md5sum <pm path 的 base.apk>` 与本地 `md5 -q` 对账。
+- `uiautomator dump` 失败会静默留旧文件：先 `rm /sdcard/ui.xml` 再 dump；`text="[^"]{1,N}"` 正则会整条滤掉超长文本，先看 len 再截断。
+- `adb shell` 命令中 `&` 会截断 URI：深链测试 URI 需在设备侧加引号。
