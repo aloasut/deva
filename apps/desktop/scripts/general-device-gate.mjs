@@ -8,7 +8,8 @@
 //   1. 桌面实例:DEVA_HOME=<测试家目录> electron --remote-debugging-port=9227 \
 //        <启动器> boot.cjs     (boot.cjs 做(userData 隔离) 后 require out/main/index.js;
 //         单实例锁按 userData 隔离,可与日常 Deva 并存)
-//   2. Mock 模型:任一 OpenAI 兼容端点监听 127.0.0.1:43190(见 /tmp/deva-p2e/mock-llm3.mjs 样例)
+//   2. Mock 模型:node scripts/general-device-mock-llm.mjs(监听 127.0.0.1:43190;
+//      ⑥ 忙窗依赖 "count to N" ASCII 慢流分支——无此分支的 mock 会让 ⑥ race 败)
 //   3. 本仓库已构建:apps/desktop 下 `pnpm exec electron-vite build`
 //
 // 用法:node scripts/general-device-gate.mjs [CDP端口=9227]
