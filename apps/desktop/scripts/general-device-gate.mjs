@@ -224,8 +224,8 @@ ok('⑳b 模型清单含 active 默认', Array.isArray(ml.models) && hasMock && 
 
 // ㉑ 投影口径:回填与列表摘要不含引擎标记(⟦deva:compaction⟧/⟦deva:auto⟧/⟦deva:notify⟧——压缩摘要/自愈
 // 引导/任务通知不当人话;压缩「只插摘要不删消息」后这类消息只增不减,投影不过滤就会把带标记原文当
-// 用户气泡回给手机)。门禁实例没有标记会话时平凡为真;真标记场景的专验证(隔离 DEVA_HOME 预制标记
-// 会话 → 起实例 → 断言回填条数/序列/摘要)见 android-client/design.mdx 第七轮轨迹。
+// 用户气泡回给手机)。门禁实例没有标记会话时平凡为真;真标记场景的专验证:隔离 DEVA_HOME 预制含
+// ⟦deva:*⟧ 前缀消息的会话文件 → 起实例配对 → 断言回填条数/序列连续/列表摘要不露标记(全量 11 断言)。
 let leak = ''
 const scanList = JSON.parse(execSync(`curl -s http://127.0.0.1:4317/api/sessions -H "Authorization: Bearer ${T5}"`).toString())
 for (const s of scanList.sessions) {
