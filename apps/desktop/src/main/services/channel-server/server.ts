@@ -7,9 +7,11 @@ import { createServer as createHttpServer, type IncomingMessage, type Server, ty
 import { app } from 'electron'
 import { getChatRuntime, parseAskQuestions, renameSessionTitle, deleteSessionFully } from '../chat'
 import { acceptExternalAttachment } from '../attachments'
+import { isTaskNotification } from '../compaction'
 import { ensureSession, getSession, listSessions, save as saveProject, setSessionArchived } from '../chat-store'
 import type { StoredSession } from '../chat-store'
 import { activeModelRef, listEnabledModels, resolveDefaultEffort, resolveModelRefForSend } from '../model-resolve'
+import { isAutoNudge, isCompactionSummary } from '../model-view'
 import { getPersona, listPersonas } from '../personas'
 import { listTasks, previewSchedule } from '../tasks'
 import { getConfig } from '../config'
@@ -201,15 +203,27 @@ async function deliveredFiles(session: StoredSession, toolUseId: string): Promis
 }
 
 /**
+ * 引擎注入的标记消息（压缩摘要 ⟦deva:compaction⟧ / 自愈引导 ⟦deva:auto⟧ / 后台任务通知 ⟦deva:notify⟧）：
+ * 桌面端主进程重建时翻成压缩提示/系统行，从不上屏原文；手机端投影同口径——不当人话，跳过。
+ * 判定与桌面同源（model-view.ts / compaction.ts），不在通道里复制前缀规则（压缩「只插摘要不删消息」
+ * 后这类消息只增不减，投影不过滤就会把带标记的原文当用户气泡回给手机）。
+ */
+function isEngineMarked(m: Message): boolean {
+  return isCompactionSummary(m) || isAutoNudge(m) || isTaskNotification(m)
+}
+
+/**
  * 把主进程的 Message[]（模型上下文真源）投影成手机端可显示的线性列表：
  * 正文取 text 块；assistant 的 tool_use 折叠成工具名；user 消息里的 tool_result（provider 约定）
- * 不是人话，跳过；图片/文档只报个数（v1 不回填正文附件）。i 为投影后序号，供分页定位。
+ * 不是人话，跳过；引擎标记消息（压缩摘要/自愈引导/任务通知，见 isEngineMarked）同样跳过；
+ * 图片/文档只报个数（v1 不回填正文附件）。i 为投影后序号，供分页定位。
  * 未决交互卡判定只读边车终态（asks/plans），不在通道里复制「循环暂停」语义。
  * 交付文件（present_files）读边车 delivered：有交付时该调用整行升格为 files 卡。
  */
 async function projectMessages(messages: Message[], session: StoredSession): Promise<BackfillItem[]> {
   const out: BackfillItem[] = []
   for (const m of messages) {
+    if (isEngineMarked(m)) continue
     const texts: string[] = []
     const tools: string[] = []
     const files: DeliverableFileJson[] = []
@@ -292,6 +306,7 @@ const CONTENT_TYPES: Record<string, string> = {
 function lastVisibleText(messages: Message[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]
+    if (isEngineMarked(m)) continue // 标记消息不当「最后一条消息」：列表摘要不能露出 ⟦deva:*⟧ 原文
     const texts: string[] = []
     if (typeof m.content === 'string') {
       if (m.content.trim()) texts.push(m.content)
