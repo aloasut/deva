@@ -102,7 +102,7 @@ relations:
   "total": 21 }
 ```
 
-`busy=true` 表示该会话有正在运行的回合。`personaName` 由服务端把 `personaId` 解析成角色展示名(未绑定或角色已删除时字段缺省)——设备端画角色徽标无需再调角色清单接口。`lastMessage` 与 `/messages` 投影同口径(正文 text 块,跳过纯工具轮)。
+`busy=true` 表示该会话有正在运行的回合。`personaName` 由服务端把 `personaId` 解析成角色展示名(未绑定或角色已删除时字段缺省)——设备端画角色徽标无需再调角色清单接口。`lastMessage` 与 `/messages` 投影同口径(正文 text 块,跳过纯工具轮,也跳过引擎标记消息——见下文回填口径)。
 
 `focusRoot`(聚焦工作区绝对路径,缺省=全机通用)供设备端目录分组;`pendingCard` 布尔=有未决交互卡(设备端「待操作」角标;由 asks/plans 边车判定)。**分类与排序由设备端按这些字段自定**(服务端恒按 `updatedAt` 倒序返回全量)。
 
@@ -282,6 +282,7 @@ relations:
 - `card` 仅在该卡**尚无终态**时出现(未决卡);已答的卡不回填——设备端应答后靠 `interaction_resolved` 事件收起。
 - `files` 为该消息交付的文件(仅在交付成功时出现);`path` 可直接用于 `/api/files`。
 - `tools` 是工具名数组,设备端折叠为一行;`attachments` 是正文之外的附件个数。
+- **引擎标记消息不回填**:压缩摘要(`⟦deva:compaction⟧` 前缀)、自愈引导(`⟦deva:auto⟧`)、后台任务通知(`⟦deva:notify⟧`)在桌面端由主进程翻成压缩提示/系统行,从不上屏原文;投影同口径跳过(判定与桌面同源 `model-view.ts`/`compaction.ts`)。压缩「只插摘要不删消息」后这类消息只增不减,设备端看到的历史始终是纯人话线性列表。
 
 ---
 

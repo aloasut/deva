@@ -149,6 +149,7 @@ data: {"sessionId":"...","turnId":"...","type":"text_delta","text":"..."}
 
 - 设备在线态 online/lastSeenAt（§3.5 已回写）；会话列表过滤成员会话（与 hub 同口径）；发送模型解析链已抽 `model-resolve.resolveModelRefForSend` 供 hub 与通道同源；单设备 enabled 与改名；稳健性自加：错误契约（401→重新配对终态/403 白名单/409 忙）、FileSaver API 分档回落、SecureStore KeyStore 损坏自愈、图片预览 25MB cap+LruCache+EXIF、明文提示双落点。
 - **三方对拍遗留项四轮闭环（2026-11-12，交接文档史实收口）**：第一轮 5-agent 审查 P0/P1/P2（至 a28780c）；第二轮 P1–P2 加固（配对成功桌面通知、`POST /api/devices/self` 自助吊销、`POST /api/sessions/:id/archive` 忙时 409、Origin 端口校验、firstRun 过滤成员会话、列表 personaName/lastMessage、单会话 GET 忽略 query、回合级流未知 turnId 404、busy 409 文案统一 hub 同款、启停均失效 token 缓存、ChatScreen 稳定 key+delta 合帧 30fps）；第三轮 **§1 附件上传落 v1**（原 v2 预留，`POST /api/attachments` 与桌面粘贴同管道+安卓选图上传）并修复真机观察项（双用户气泡竞态→pendingSendText 在途标记、EventStream 看门狗中断噪音）；第四轮 **§6 白烧码修复**（消费保持先行，setSecret 失败按原有效期恢复码）。协议门禁扩至 22 项（`apps/desktop/scripts/general-device-gate.mjs`）。第五轮 **用户侧六需求**（角色清单/建会话选角色、列表 focusRoot+pendingCard「待操作」角标、删除/重命名端点、定时任务只读清单、模型清单+对话内切换——rename/delete 经 chat.ts 模块级委托导出与桌面 IPC 共用同一闭包实现）。门禁扩至 31 项。第六轮 **会话页心流简化**（UI 单端）：注意力分区取代筛选 chips（原分类排序能力降为 ⋮ 整理弹窗的分组项）、行内降噪（角色/目录并入次行）、归档默认隐藏（⋮ Switch 临时显示）、FAB → 角色选择点选直达创建。
+- **第七轮（2026-11-12，上游 main 合并适配）**：合并 origin/main 十提交（压缩「只插摘要不删消息」+按压缩边界拆分存盘、摘要把关、复读检测自愈、子智能体默认后台、服务商输出预留超窗修复、右键引用、头像形状创建时固定等）。通道侧逐项核实：模型解析链 hub 改内联 `resolveModelRefOrNull` 但 `resolveModelRefForSend` 语义不变（审查 F3 同源仍成立）；chat-store 拆分仅落盘层、内存 messages 恒完整，通道读路径无感；引用行/头像形状/定时任务行布局均为桌面渲染层，通道无关。**随压缩不删消息，引擎标记消息只增不减**——补投影过滤：`projectMessages`/`lastVisibleText` 跳过 `⟦deva:compaction⟧`（压缩摘要）/`⟦deva:auto⟧`（自愈引导）/`⟦deva:notify⟧`（任务通知）消息（判定与桌面同源 `model-view.ts`/`compaction.ts`，桌面端原文本就从不上屏，手机端自此同口径）。验证：隔离 DEVA_HOME 预制标记会话 → 起实例 → REST 断言回填条数/序列/列表摘要，11 项全绿。门禁扩至 32 项（㉑ 全量扫描不露 `⟦deva:*⟧`，无标记会话时平凡为真）。遗留观察：子智能体默认后台后，后台子任务终态在回合外揭晓，channel-server 无 hub `flushPost` 对等的推送机制，手机端需下次刷新才见——真机观察项。
 
 ## 4. 安卓端结构
 
@@ -240,7 +241,7 @@ app/src/main/java/zai/deva/android/
 
 **门禁结论：通过（2026-11-12）**。放行 P0→P5，实现中偏离本文需先改本文。
 
-**协议回归门禁**：`node apps/desktop/scripts/general-device-gate.mjs [CDP端口=9227]`，31 项不变量（用法/前置见脚本头注释：隔离 DEVA_HOME 桌面实例 + OpenAI 兼容 mock 模型 127.0.0.1:43190 + 仓库已构建）。改动 channel-server 后必须全绿。
+**协议回归门禁**：`node apps/desktop/scripts/general-device-gate.mjs [CDP端口=9227]`，32 项不变量（用法/前置见脚本头注释：隔离 DEVA_HOME 桌面实例 + OpenAI 兼容 mock 模型 127.0.0.1:43190 + 仓库已构建）。改动 channel-server 后必须全绿。
 
 **真机（PryFox VM）验证注意（交接文档坑清单收口）**：
 - gradle 守护进程增量缓存跨进程持久：编译报错引用磁盘上不存在的旧签名、或 APK md5 不变却 BUILD SUCCESSFUL 时，`rm -rf app/build/kotlin` + `--rerun-tasks` 强制真编译；装到设备后 `adb shell md5sum <pm path 的 base.apk>` 与本地 `md5 -q` 对账。
