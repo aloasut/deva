@@ -306,9 +306,12 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
                                         pendingAttaches = emptyList()
                                         if (r.value.isEmpty()) {
                                             // 忙时回退为「插入进行中的任务」(IM 同口径):无新回合
-                                            // (插入只带正文,附件清单一并清——用户需重选附件)
+                                            // (插入只带正文;随附的附件被丢弃——明确提示,不让用户以为附件已送达)
                                             AppGraph.sessions.clearSending(sessionId)
-                                            snackbar.showSnackbar("已插入进行中的任务，当前步骤结束后送达。")
+                                            snackbar.showSnackbar(
+                                                if (attachPaths.isEmpty()) "已插入进行中的任务，当前步骤结束后送达。"
+                                                else "已插入进行中的任务；附件未随插入送达，如需请重新附加后再发。"
+                                            )
                                         } else {
                                             AppGraph.sessions.sendStarted(sessionId, r.value, text) {
                                                 AppGraph.scope.launch {
