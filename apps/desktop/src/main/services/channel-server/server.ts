@@ -6,19 +6,19 @@ import { basename, extname, isAbsolute } from 'node:path'
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { app } from 'electron'
 import { getChatRuntime, parseAskQuestions } from '../chat'
-import { ensureSession, getSession, listSessions, save as saveProject } from '../chat-store'
+import { ensureSession, getSession, listSessions, save as saveProject, setSessionArchived } from '../chat-store'
 import type { StoredSession } from '../chat-store'
 import { resolveDefaultEffort, resolveModelRefForSend } from '../model-resolve'
 import { getPersona } from '../personas'
-import { setSecret } from '../secrets'
+import { deleteSecretsByPrefix, setSecret } from '../secrets'
 import type { Message } from '../../providers/types'
 import { isEffortLevel } from '../../../shared/effort'
 import type { ChannelState } from '../remote/types'
 import { deviceIdForToken, invalidateTokenCache } from './auth'
-import { noteDeviceSeen, noteDeviceStream } from './activity'
-import { addDevice, getGeneralServerConfig, sanitizeDeviceName, type GeneralServerConfig } from './config'
+import { noteDeviceSeen, noteDeviceStream, dropDevice } from './activity'
+import { addDevice, getGeneralServerConfig, removeDevice, sanitizeDeviceName, type GeneralServerConfig } from './config'
 import { consumePairCodeIfMatch, notePairFailure, pairAttemptAllowed } from './pairing'
-import { canAdmit, openSessionStream, openTurnStream } from './sse'
+import { canAdmit, closeDeviceConnections, openSessionStream, openTurnStream, turnRegistered } from './sse'
 
 /**
  * 入站 HTTP 服务器（node:http，REST + SSE 同一监听，设计 §3.1/3.3）。
@@ -28,9 +28,13 @@ import { canAdmit, openSessionStream, openTurnStream } from './sse'
 
 export interface ServerHooks {
   onState(state: ChannelState, error?: string): void
+  /** 新设备配对成功（对齐回复提醒的通知模式；index.ts 实现桌面系统通知）。 */
+  onDevicePaired?(name: string): void
 }
 
 let server: Server | null = null
+/** startServer 注入的钩子（route 是模块级函数，配对成功通知经此转发给 index.ts）。 */
+let hooksRef: ServerHooks | null = null
 
 const errText = (e: unknown): string => (e as Error)?.message ?? String(e)
 
@@ -74,7 +78,9 @@ const PROTOCOL_CAPABILITIES = [
   'files',
   'set-host',
   'set-enabled',
-  'rename-device'
+  'rename-device',
+  'self-revoke',
+  'session-archive'
 ] as const
 
 function genDeviceId(): string {
@@ -248,6 +254,33 @@ const CONTENT_TYPES: Record<string, string> = {
   '.zip': 'application/zip'
 }
 
+/**
+ * 会话列表的「最后一条消息」摘要（设备端列表展示用）：与 projectMessages 同口径取人话文本
+ * （正文 text 块；跳过纯工具轮），从尾部倒查到第一条带正文的即返回，超长截断。
+ */
+function lastVisibleText(messages: Message[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    const texts: string[] = []
+    if (typeof m.content === 'string') {
+      if (m.content.trim()) texts.push(m.content)
+    } else {
+      for (const p of m.content) if (p.type === 'text' && p.text.trim()) texts.push(p.text)
+    }
+    if (texts.length) {
+      const joined = texts.join(' ').replace(/\s+/g, ' ').trim()
+      return joined.length > 120 ? `${joined.slice(0, 120)}…` : joined
+    }
+  }
+  return null
+}
+
+/** personaId → 展示名（设备端角色徽标用；未绑定或已删除的角色回 null）。 */
+function personaDisplayName(personaId: string | undefined): string | null {
+  if (!personaId) return null
+  return getPersona(personaId)?.name ?? null
+}
+
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? '/', 'http://local')
   const method = req.method ?? 'GET'
@@ -283,6 +316,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         return json(res, 500, { error: '系统密钥存储不可用，无法安全保存设备凭据。' })
       addDevice({ id: deviceId, name, pairedAt: Date.now(), enabled: true })
       invalidateTokenCache()
+      hooksRef?.onDevicePaired?.(name)
       return json(res, 200, {
         deviceId,
         token,
@@ -297,15 +331,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const deviceId = await deviceIdForToken(token)
     if (!deviceId) return json(res, 401, { error: '未配对或凭据无效。' })
 
-    // 纵深防御（审查 A3）：带 Origin 头的请求必须来自本机/本机 LAN 地址——
-    // 阻断受害者浏览器里恶意页面对本通道的跨站调用（CSRF/DNS rebinding）。
+    // 纵深防御（审查 A3）：带 Origin 头的请求必须来自本机/本机 LAN 地址，且端口必须就是本通道
+    // 监听端口——本机其他端口上的服务（如开发服务器）可伪造同主机名的 Origin，只比主机名拦不住。
     // 手机 App 不发送 Origin 头，不受影响。
     const origin = req.headers.origin
     if (origin) {
       try {
         const o = new URL(origin)
         const allowedHosts = ['127.0.0.1', 'localhost', hostname(), ...lanHosts()]
-        if (!allowedHosts.includes(o.hostname))
+        if (!allowedHosts.includes(o.hostname)) return json(res, 403, { error: '跨源请求被拒绝。' })
+        // URL.port 缺省（http 默认 80 / https 默认 443）时补成显式端口再比
+        const originPort = o.port || (o.protocol === 'https:' ? '443' : '80')
+        if (originPort !== String(getGeneralServerConfig().port))
           return json(res, 403, { error: '跨源请求被拒绝。' })
       } catch {
         return json(res, 403, { error: 'Origin 不合法。' })
@@ -313,31 +350,50 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     }
     noteDeviceSeen(deviceId)
 
-    // GET /api/info：版本、主机名、平台、是否首次运行（首次运行 = 还没有任何会话）
+    // 自助吊销（凭 Bearer token 自证身份）：丢失设备可远程自救，无需物理回到桌面。
+    // 走 removeDevice 全套清理（配置 + 密钥 + 活动态 + SSE + token 缓存），此后该 token 一律 401。
+    if (method === 'POST' && url.pathname === '/api/devices/self') {
+      removeDevice(deviceId)
+      await deleteSecretsByPrefix(`general:${deviceId}:`)
+      dropDevice(deviceId)
+      closeDeviceConnections(deviceId)
+      invalidateTokenCache()
+      return json(res, 200, { ok: true })
+    }
+
+    // GET /api/info：版本、主机名、平台、是否首次运行（首次运行 = 还没有任何顶层会话；
+    // 成员会话（子智能体）与 /api/sessions 列表同口径过滤，避免「列表空但 firstRun=false」的矛盾）
     if (method === 'GET' && url.pathname === '/api/info')
       return json(res, 200, {
         version: app.getVersion(),
         hostname: hostname(),
         platform: process.platform,
-        firstRun: listSessions().length === 0,
+        firstRun: listSessions().filter((s) => !s.parentId).length === 0,
         protocol: PROTOCOL_VERSION,
         capabilities: PROTOCOL_CAPABILITIES
       })
 
-    // GET /api/sessions：会话列表（转发 chat-store；成员会话不进手机列表，与 hub /list 同口径）
+    // GET /api/sessions：会话列表（转发 chat-store；成员会话不进手机列表，与 hub /list 同口径）。
+    // personaName / lastMessage 供设备端列表的角色徽标与最后消息摘要（服务端解析，设备端无需角色清单接口）
     if (method === 'GET' && url.pathname === '/api/sessions') {
       const rt = getChatRuntime()
       const all = listSessions()
         .filter((s) => !s.parentId)
         .sort((a, b) => b.updatedAt - a.updatedAt)
-        .map((s) => ({
-          id: s.id,
-          title: s.title,
-          personaId: s.personaId,
-          updatedAt: s.updatedAt,
-          busy: rt?.isBusy(s.id) ?? false,
-          archived: s.archived === true
-        }))
+        .map((s) => {
+          const pn = personaDisplayName(s.personaId)
+          const last = lastVisibleText(getSession(s.id)?.messages ?? [])
+          return {
+            id: s.id,
+            title: s.title,
+            personaId: s.personaId,
+            ...(pn ? { personaName: pn } : {}),
+            updatedAt: s.updatedAt,
+            busy: rt?.isBusy(s.id) ?? false,
+            archived: s.archived === true,
+            ...(last ? { lastMessage: last } : {})
+          }
+        })
       // ?limit= 前缀截断(设备端「加载更早」分页的预留;默认全量)
       const limitRaw = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
       const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : undefined
@@ -386,10 +442,11 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (!model) return json(res, 400, { error: '还没有可用的模型，请先在电脑端的设置里配置并选定模型。' })
       // 会话忙 → 回退为「插入进行中的任务」(与 hub/IM 同口径,审查 A4):
       // 设备在回合进行中再发消息,桌面原语就是插入当前这一轮。
+      // 两次 isBusy 检查(读 attachments 前后)防竞态,409 文案统一为 hub 同款。
       if (rt.isBusy(sid)) {
         const r = rt.insert({ sessionId: sid, text, model })
         if (r.ok) return json(res, 200, { inserted: true })
-        return json(res, 409, { error: '上一轮还在进行中，请稍后再试。' })
+        return json(res, 409, { error: '上一轮还在进行中。发送 /stop 可以停止它。' })
       }
       const attachments = Array.isArray(body?.attachments)
         ? body.attachments.filter((a): a is string => typeof a === 'string' && a.length > 0)
@@ -484,22 +541,40 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return
     }
 
+    // POST /api/sessions/:id/archive：归档 / 取消归档（转调 chat-store.setSessionArchived，与桌面
+    // chat:set-archived 同源）。忙碌会话不可归档（与桌面同口径回 409）；取消归档随时可以。
+    const mArch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/archive$/)
+    if (mArch && method === 'POST') {
+      const archSid = decodeSegment(mArch[1])
+      if (archSid === null || !getSession(archSid)) return json(res, 404, { error: '会话不存在。' })
+      const body = await readJson<{ archived?: unknown }>(req)
+      if (typeof body?.archived !== 'boolean') return json(res, 400, { error: '缺少 archived 布尔值。' })
+      if (body.archived && (getChatRuntime()?.isBusy(archSid) ?? false))
+        return json(res, 409, { error: '会话正在运行回合，结束后再归档。' })
+      setSessionArchived(archSid, body.archived)
+      return json(res, 200, { ok: true, archived: body.archived })
+    }
+
     // GET /api/sessions/:id：单个会话元信息（设计 §3.3 表补齐;pendingInserts v1 恒空——
-    // 插入消息走 send 的 busy→insert 回退,不落独立队列）
+    // 插入消息走 send 的 busy→insert 回退,不落独立队列）。带 query 不再落 404:query 一律忽略。
     const mOne = url.pathname.match(/^\/api\/sessions\/([^/]+)$/)
-    if (mOne && method === 'GET' && !url.search) {
+    if (mOne && method === 'GET') {
       const oneId = decodeSegment(mOne[1])
       if (oneId === null) return json(res, 400, { error: '会话 id 编码不合法。' })
       const one = getSession(oneId)
       if (!one) return json(res, 404, { error: '会话不存在。' })
       const busy = getChatRuntime()?.isBusy(oneId) ?? false
+      const onePn = personaDisplayName(one.personaId)
+      const oneLast = lastVisibleText(one.messages)
       return json(res, 200, {
         id: one.id,
         title: one.title,
         personaId: one.personaId,
+        ...(onePn ? { personaName: onePn } : {}),
         busy,
         archived: one.archived === true,
-        pendingInserts: []
+        pendingInserts: [],
+        ...(oneLast ? { lastMessage: oneLast } : {})
       })
     }
 
@@ -555,9 +630,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       return
     }
 
-    // GET /api/turns/:turnId/events：SSE（长连接，此处不写 JSON 结尾）
+    // GET /api/turns/:turnId/events：SSE（长连接，此处不写 JSON 结尾）。
+    // 未知 turnId 直接 404（sse.turnRegistered）：turn_start 入环即登记，设备端拿到的 turnId
+    // 必然已登记——客户端 bug 捏造的无效连接不再开流空等占用连接配额。
     const m = url.pathname.match(/^\/api\/turns\/([A-Za-z0-9_-]+)\/events$/)
     if (m && method === 'GET') {
+      if (!turnRegistered(m[1])) return json(res, 404, { error: '回合不存在或已超出事件缓冲。' })
       if (!canAdmit(deviceId))
         return json(res, 429, { error: '该设备连接数已达上限，请关闭其他会话的实时订阅。' })
       const h = req.headers['last-event-id']
@@ -579,6 +657,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 /** 起监听（设计 §3.1：端口冲突明确报错，不静默换端口）。 */
 export async function startServer(opts: { host: string; port: number }, hooks: ServerHooks): Promise<void> {
   await stopServer()
+  hooksRef = hooks
   const srv = createHttpServer((req, res) => {
     void route(req, res)
   })

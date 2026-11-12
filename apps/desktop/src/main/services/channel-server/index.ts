@@ -1,6 +1,7 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, ipcMain, Notification } from 'electron'
 import QRCode from 'qrcode'
 import type { ChannelState } from '../remote/types'
+import { getConfig } from '../config'
 import { deleteSecretsByPrefix } from '../secrets'
 import { getGeneralServerConfig, patchGeneralServer, removeDevice, renameDevice, setDeviceEnabled } from './config'
 import { invalidateTokenCache } from './auth'
@@ -77,6 +78,34 @@ export function onChannelServerChange(l: () => void): () => void {
   return () => listeners.delete(l)
 }
 
+/**
+ * 新设备配对成功的桌面系统通知（对齐 reply-notify 的模式）：窗口在焦点上时用户多半正盯着
+ * 机器人面板看设备出现，不打扰；失焦（最小化 / 托盘 / 被盖住）必提醒——新设备接入是安全事件。
+ * 点击唤起窗口（落回消息视图，面板列表 5s 轮询自会刷新）。
+ */
+function notifyDevicePaired(name: string): void {
+  const w = getWindowFn()
+  if (w && !w.isDestroyed() && w.isFocused()) return
+  try {
+    if (!Notification.isSupported()) return
+    const en = getConfig().locale === 'en'
+    const n = new Notification({
+      title: 'Deva',
+      body: en ? `New device "${name}" has been paired` : `新设备「${name}」已配对接入`
+    })
+    n.on('click', () => {
+      const win = getWindowFn()
+      if (!win || win.isDestroyed()) return
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    })
+    n.show()
+  } catch {
+    /* 通知不可用 / 抛错 → 静默降级 */
+  }
+}
+
 /** 幂等启动；generalServer.enabled=false 时保持 off（不占端口）。 */
 export async function startChannelServer(): Promise<void> {
   if (running) return
@@ -93,7 +122,8 @@ export async function startChannelServer(): Promise<void> {
       onState: (s, error) => {
         if (s === 'error') running = false
         setState(s, error)
-      }
+      },
+      onDevicePaired: notifyDevicePaired
     })
   } catch (e) {
     running = false
@@ -149,10 +179,10 @@ export function registerChannelServerIpc(getWindow: () => BrowserWindow | null =
   // 单设备启停（审查 F1/F8）：false 即该设备请求一律 401
   ipcMain.handle('general:set-device-enabled', (_e, id: string, enabled: boolean): { ok: true } => {
     setDeviceEnabled(id, enabled)
-    if (!enabled) {
-      closeDeviceConnections(id)
-      invalidateTokenCache() // 立即失效:停用后该设备请求一律 401(否则缓存里旧 token 仍可用)
-    }
+    // 启停都失效 token 缓存:停用后旧 token 立即 401;启用后设备 token 立即回到缓存
+    // (否则「停用 → 主进程重启 → 启用」序列里缓存可能停留在停用快照,设备被 401 到下次失效为止)
+    invalidateTokenCache()
+    if (!enabled) closeDeviceConnections(id) // 掐断停用设备的 SSE:鉴权只在建连时做,必须主动断
     return { ok: true }
   })
 

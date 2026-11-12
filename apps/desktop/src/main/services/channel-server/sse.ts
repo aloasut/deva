@@ -113,6 +113,15 @@ export function canAdmit(deviceId?: string): boolean {
   return mine < MAX_PER_DEVICE
 }
 
+/**
+ * turnId 是否已有事件入环（turn_start 已发即登记）。server.ts 的回合级流据此 404 未知 turnId——
+ * 客户端 bug 导致的无效连接不再照常开流空等占用连接配额。
+ * send 返回前 turn_start 已入环，设备端拿到的 turnId 必然已登记；被 ring 淘汰的老回合回 404 亦符合语义。
+ */
+export function turnRegistered(turnId: string): boolean {
+  return turnIndex.has(turnId)
+}
+
 function writeFrame(conn: Connection, f: Frame): void {
   if (conn.res.destroyed || conn.res.writableEnded) return
   // 写背压（审查 P1-5）：停滞连接（进程冻结/死 Wi-Fi）的用户态缓冲无界增长前踢除——
