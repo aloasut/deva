@@ -1,6 +1,9 @@
 package zai.deva.android.ui
 
 import android.text.format.DateUtils
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,9 +18,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ElevatedCard
@@ -51,9 +56,10 @@ import zai.deva.android.core.SessionMeta
 
 /**
  * 服务器 + 会话列表（设计 §5-1/2）：顶部当前服务器与连接状态，列表按更新时间倒序
- * （服务端已排），每项显示标题、忙/闲、相对时间；FAB 新建会话。P2 不做角色徽标与摘要。
+ * （服务端已排），每项显示标题、角色徽标、最后消息摘要、忙/闲、相对时间；FAB 新建会话。
+ * 长按会话项弹出归档 / 取消归档（服务端忙时归档回 409 提示）。
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit) {
     // onOpenSettings 既用于空态引导，也用于错误横幅的「去设置」（P5 错误态）
@@ -63,6 +69,8 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit) {
     val scope = rememberCoroutineScope()
     var creating by remember { mutableStateOf(false) }
     var refreshError by remember { mutableStateOf<String?>(null) }
+    // 长按弹出的会话操作目标（null = 无）
+    var actionTarget by remember { mutableStateOf<SessionMeta?>(null) }
 
     // 进入 / 回到首页时刷新列表（失败给横幅：可重试；401 引导去设置重新配对）
     LaunchedEffect(Unit) {
@@ -166,7 +174,11 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit) {
                     }
                 }
                 items(sessions, key = { it.id }) { s ->
-                    SessionRow(s) { onOpenChat(s.id) }
+                    SessionRow(
+                        s,
+                        onClick = { onOpenChat(s.id) },
+                        onLongClick = { actionTarget = s }
+                    )
                 }
                 if (sessions.isEmpty()) {
                     item {
@@ -180,6 +192,31 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit) {
                 }
             }
         }
+    }
+
+    // 长按会话项 → 归档 / 取消归档（409 = 会话忙，桌面同口径）
+    actionTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { actionTarget = null },
+            title = { Text(target.title.ifBlank { "新对话" }) },
+            text = { Text(if (target.archived) "取消归档后该会话恢复出现在列表顶部。" else "归档后该会话不再出现在列表里，历史保留可随时取消。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val client = AppGraph.client()
+                    if (client != null) {
+                        scope.launch {
+                            when (val r = client.setArchived(target.id, !target.archived)) {
+                                is ApiResult.Err -> snackbar.showSnackbar(r.message)
+                                is ApiResult.Ok -> Unit
+                            }
+                            AppGraph.sessions.refresh(client)
+                        }
+                    }
+                    actionTarget = null
+                }) { Text(if (target.archived) "取消归档" else "归档") }
+            },
+            dismissButton = { TextButton(onClick = { actionTarget = null }) { Text("关闭") } }
+        )
     }
 }
 
@@ -214,9 +251,14 @@ private fun EmptyState(pad: PaddingValues, onOpenSettings: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(s: SessionMeta, onClick: () -> Unit) {
-    ElevatedCard(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+private fun SessionRow(s: SessionMeta, onClick: () -> Unit, onLongClick: () -> Unit) {
+    ElevatedCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    ) {
         Row(
             modifier = Modifier.padding(14.dp).fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -227,7 +269,29 @@ private fun SessionRow(s: SessionMeta, onClick: () -> Unit) {
                     style = MaterialTheme.typography.bodyLarge,
                     maxLines = 1
                 )
+                s.lastMessage?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    s.personaName?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                    RoundedCornerShape(4.dp)
+                                )
+                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                        )
+                    }
                     if (s.archived) {
                         Text(
                             "已归档",

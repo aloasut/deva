@@ -193,7 +193,8 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
                         ) { Text("加载更早") }
                     }
                 }
-                items(items) { item -> TimelineRow(item, onAnswer, sessionId, snackbar) }
+                // 稳定 key（uid）：结构变化时 Compose 按内容同一性局部重组，不做全列表位置 diff
+                items(items, key = { it.uid }) { item -> TimelineRow(item, onAnswer, sessionId, snackbar) }
             }
             }
 

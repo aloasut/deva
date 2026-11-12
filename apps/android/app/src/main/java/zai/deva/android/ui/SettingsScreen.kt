@@ -159,6 +159,43 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
 
+            // 自助吊销（协议 self-revoke 能力）：凭当前 token 远程删除本设备的桌面侧凭据，
+            // 丢失设备无需物理回到桌面自救
+            item {
+                val cur = servers.firstOrNull { it.id == currentId }
+                if (cur?.deviceId?.isNotEmpty() == true) {
+                    var confirming by remember { mutableStateOf(false) }
+                    TextButton(onClick = { confirming = true }) {
+                        Text("吊销本设备", color = MaterialTheme.colorScheme.error)
+                    }
+                    if (confirming) {
+                        AlertDialog(
+                            onDismissRequest = { confirming = false },
+                            title = { Text("吊销本设备") },
+                            text = { Text("删除电脑端「${cur.name}」里本设备的配对凭据，此后本机无法再访问该电脑端（历史会话保留）。需要时可在电脑端重新配对。") },
+                            confirmButton = {
+                                TextButton(onClick = {
+                                    confirming = false
+                                    val client = AppGraph.client() ?: return@TextButton
+                                    val deviceId = cur.deviceId
+                                    scope.launch {
+                                        when (val r = client.selfRevoke()) {
+                                            is ApiResult.Err -> snackbar.showSnackbar(r.message)
+                                            is ApiResult.Ok -> {
+                                                AppGraph.secure.removeToken(deviceId)
+                                                AppGraph.servers.updateDevice(cur.id, "")
+                                                snackbar.showSnackbar("已吊销本设备。如需再次使用请在电脑端重新配对。")
+                                            }
+                                        }
+                                    }
+                                }) { Text("吊销", color = MaterialTheme.colorScheme.error) }
+                            },
+                            dismissButton = { TextButton(onClick = { confirming = false }) { Text("取消") } }
+                        )
+                    }
+                }
+            }
+
             // 明文传输提示（安全要求，不能省）
             item {
                 ElevatedCard(

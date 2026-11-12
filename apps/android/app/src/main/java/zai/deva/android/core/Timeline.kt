@@ -3,6 +3,14 @@ package zai.deva.android.core
 import org.json.JSONArray
 import org.json.JSONObject
 
+/**
+ * 时间线条目的稳定 key（LazyColumn items(key = it.uid) 用）：进程内计数器唯一即可——
+ * 同一条目跨快照恒定（增量走 data class copy 保留 uid），列表结构变化时 Compose 按内容
+ * 同一性做局部重组，不再做全列表位置 diff（审查遗留 #13：位置同一性）。
+ */
+private val itemSeq = java.util.concurrent.atomic.AtomicInteger(0)
+internal fun nextItemId(): String = "ti${itemSeq.incrementAndGet()}"
+
 /** 问答卡的单题（与桌面 AskQuestion 同形：题干 + 候选项 + 多选 + 必答）。 */
 data class AskQuestion(val question: String, val options: List<String>, val multi: Boolean, val required: Boolean)
 
@@ -21,23 +29,36 @@ sealed interface CardPayload {
  * P2 覆盖：text_delta / thinking_delta / tool_call / tool_result / turn_start / error / done。
  * P3 覆盖：ask_user / plan_review / mount_request 三类卡 + interaction_resolved 收起。
  * P4 覆盖：present_files 交付卡（tool_result 升格 + /deliveries 清单回填）。
+ *
+ * uid 是列表稳定 key（缺省自动分配；Tool.id 是工具调用 id，勿混）。
  */
 sealed interface TimelineItem {
-    data class Text(val text: String, val fromUser: Boolean) : TimelineItem
-    data class Thinking(val text: String) : TimelineItem
+    val uid: String
+
+    data class Text(val text: String, val fromUser: Boolean, override val uid: String = nextItemId()) : TimelineItem
+    data class Thinking(val text: String, override val uid: String = nextItemId()) : TimelineItem
     /** summary = null 表示工具还在跑（「正在…」）；tool_result 到达后定格。 */
-    data class Tool(val id: String, val name: String, val summary: String?) : TimelineItem
+    data class Tool(
+        val id: String,
+        val name: String,
+        val summary: String?,
+        override val uid: String = nextItemId()
+    ) : TimelineItem
     /** resolved = null 未决（可作答）；否则为收起后的一句话终态（已作答 / 已批准 / 已取消…）。 */
-    data class Card(val payload: CardPayload, val resolved: String?) : TimelineItem
+    data class Card(val payload: CardPayload, val resolved: String?, override val uid: String = nextItemId()) : TimelineItem
     /** 系统提示行（usage / insert / auto_retry / todos 等小事件，设计 §3.4 最小映射集）。 */
-    data class Note(val text: String) : TimelineItem
+    data class Note(val text: String, override val uid: String = nextItemId()) : TimelineItem
     /**
      * 交付文件卡（present_files，设计 §5-5）。files 为空且未失败 = 清单加载中；
      * failed = 清单没拉到（保留可重试的空卡）。
      */
-    data class Deliverable(val toolUseId: String, val files: List<DeliverableFile>, val failed: Boolean = false) :
-        TimelineItem
-    data class Error(val message: String) : TimelineItem
+    data class Deliverable(
+        val toolUseId: String,
+        val files: List<DeliverableFile>,
+        val failed: Boolean = false,
+        override val uid: String = nextItemId()
+    ) : TimelineItem
+    data class Error(val message: String, override val uid: String = nextItemId()) : TimelineItem
 }
 
 /**

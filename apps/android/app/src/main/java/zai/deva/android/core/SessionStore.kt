@@ -3,10 +3,12 @@ package zai.deva.android.core
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 会话列表与消息缓存（设计 §4）：v1 只用内存，不进 Room。
@@ -28,6 +30,14 @@ class SessionStore(
 
     /** 已补拉过清单的交付卡（同一 toolUseId 只拉一次；SSE 线程判重，并发安全）。 */
     private val fetched: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
+
+    /**
+     * delta 合帧闸门（审查遗留 #13）：text/thinking delta 可达 20-60 帧/s，每帧一次 O(n) 快照
+     * 拷贝 + StateFlow 发射 + LazyColumn diff——长回合里滚动动画与阅读位置被拽。
+     * 合并到 ~30fps：首个 delta 定下节拍，节拍内的后续 delta 由同一次发射带上。
+     * 结构性帧（tool/card/turn_start…）不经闸门立即上屏，其发射自然带上已累积的 delta。
+     */
+    private val deltaFlushPending = AtomicBoolean(false)
 
     private data class SessionState(
         val builder: TimelineBuilder,
@@ -170,13 +180,26 @@ class SessionStore(
         }
         val own = st.ownTurns.contains(turnId)
         st.builder.onChatEvent(f.data, isOwnTurn = own)
-        st.flow.value = st.builder.snapshot
+        // delta 合帧（~30fps）上屏；其余帧立即上屏（发射本身带上已累积的 delta）
+        if (type == "text_delta" || type == "thinking_delta") scheduleDeltaFlush(sessionId)
+        else st.flow.value = st.builder.snapshot
         // present_files 成功：清单补拉（toolUseId = 调用 id）；失败把卡标成 failed 保留重试入口
         if (type == "tool_result" &&
             f.data.optString("name") == "present_files" &&
             !f.data.optBoolean("isError")
         ) {
             fetchDeliveries(sessionId, f.data.optString("id"))
+        }
+    }
+
+    /** delta 合帧的节拍：CAS 保证同一时刻只有一个在飞发射（33ms ≈ 30fps）。 */
+    private fun scheduleDeltaFlush(sessionId: String) {
+        if (!deltaFlushPending.compareAndSet(false, true)) return
+        ioScope.launch {
+            delay(33)
+            deltaFlushPending.set(false)
+            val st = state(sessionId)
+            st.flow.value = st.builder.snapshot
         }
     }
 

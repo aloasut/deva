@@ -22,6 +22,10 @@ data class SessionMeta(
     val id: String,
     val title: String,
     val personaId: String?,
+    /** 角色展示名（服务端解析；null = 未绑定或角色已删除）。列表徽标用，无需角色清单接口。 */
+    val personaName: String?,
+    /** 最后一条可见消息摘要（服务端投影，≤120 字符；null = 空会话）。 */
+    val lastMessage: String?,
     val updatedAt: Long,
     val busy: Boolean,
     val archived: Boolean
@@ -113,6 +117,8 @@ class DevaClient(
                         id = s.getString("id"),
                         title = s.optString("title"),
                         personaId = s.optString("personaId").takeIf { it.isNotEmpty() },
+                        personaName = s.optString("personaName").takeIf { it.isNotEmpty() },
+                        lastMessage = s.optString("lastMessage").takeIf { it.isNotEmpty() },
                         updatedAt = s.optLong("updatedAt"),
                         busy = s.optBoolean("busy"),
                         archived = s.optBoolean("archived")
@@ -198,6 +204,23 @@ class DevaClient(
 
     suspend fun abort(turnId: String): ApiResult<Unit> =
         when (val r = request("POST", "/api/turns/${enc(turnId)}/abort", JSONObject())) {
+            is ApiResult.Ok -> ApiResult.Ok(Unit)
+            is ApiResult.Err -> r
+        }
+
+    /** 归档 / 取消归档会话（桌面忙时归档回 409，走 Err 返回）。 */
+    suspend fun setArchived(sessionId: String, archived: Boolean): ApiResult<Unit> =
+        when (val r = request("POST", "/api/sessions/${enc(sessionId)}/archive", JSONObject().put("archived", archived))) {
+            is ApiResult.Ok -> ApiResult.Ok(Unit)
+            is ApiResult.Err -> r
+        }
+
+    /**
+     * 自助吊销本设备（凭当前 Bearer token 自证身份）：服务端走 removeDevice 全套清理，
+     * 成功后本地凭据即失效——调用方需清本地 token 与 deviceId 并引导重新配对。
+     */
+    suspend fun selfRevoke(): ApiResult<Unit> =
+        when (val r = request("POST", "/api/devices/self", JSONObject())) {
             is ApiResult.Ok -> ApiResult.Ok(Unit)
             is ApiResult.Err -> r
         }
