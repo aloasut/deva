@@ -96,7 +96,10 @@ fun HomeScreen(onOpenChat: (String) -> Unit, onOpenSettings: () -> Unit) {
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
             if (server != null) {
+                // 显式钉主色：此 material3 版本的 ExtendedFAB 默认容器色不随 colorScheme.primary 走
                 ExtendedFloatingActionButton(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
                     onClick = {
                         val client = AppGraph.client() ?: return@ExtendedFloatingActionButton
                         if (creating) return@ExtendedFloatingActionButton

@@ -18,8 +18,12 @@ import androidx.compose.ui.unit.sp
 
 private val Accent = Color(0xFF4C8DFF)
 
+// primaryContainer 是 FAB / Snackbar 等容器的底色：不显式给定会落到 M3 基线紫，
+// 与「强调色与桌面一致」（设计 §5）不符，这里两套 scheme 都钉成品牌蓝的 tonal 变体。
 private val DarkScheme = darkColorScheme(
     primary = Accent,
+    primaryContainer = Color(0xFF2E4B86),
+    onPrimaryContainer = Color(0xFFD9E6FF),
     background = Color(0xFF1E1E20),
     surface = Color(0xFF1E1E20),
     surfaceVariant = Color(0xFF2A2A2E),
@@ -29,7 +33,9 @@ private val DarkScheme = darkColorScheme(
 )
 
 private val LightScheme = lightColorScheme(
-    primary = Accent
+    primary = Accent,
+    primaryContainer = Color(0xFFD8E2FF),
+    onPrimaryContainer = Color(0xFF0A2A5E)
 )
 
 private val AppTypography = Typography(
