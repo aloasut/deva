@@ -983,6 +983,24 @@ function GeneralDetail({ pairRequest }: { pairRequest: number }): React.JSX.Elem
       {st?.state === 'error' && st.error && <div className="mcp-error">{st.error}</div>}
 
       <div className="bots-card">
+        <div className="bots-card__row">
+          <div className="bots-card__label">
+            {t('bots.general.enable')}
+            <span className="bots-card__hint">{t('bots.general.enableHint')}</span>
+          </div>
+          <button
+            className={`cf-switch${(st?.enabled ?? true) ? ' is-on' : ''}`}
+            aria-pressed={st?.enabled ?? true}
+            title={t('bots.general.enable')}
+            onClick={() => {
+              const next = !(st?.enabled ?? true)
+              void window.deva.general.setEnabled(next)
+              setSt((s0) => (s0 ? { ...s0, enabled: next, state: next ? 'connecting' : 'off' } : s0))
+            }}
+          >
+            <span className="cf-switch__dot" />
+          </button>
+        </div>
         <p className="bots-card__hint">{t('bots.general.hint')}</p>
         <div className="bots-card__row">
           <div className="bots-card__label">
@@ -999,7 +1017,7 @@ function GeneralDetail({ pairRequest }: { pairRequest: number }): React.JSX.Elem
             <code className="bots-pair__code">{pair.code}</code>
             <div className="bots-pair__meta">
               <span className="bots-card__hint">
-                {pair.host}:{pair.port}
+                {(pair.hosts ?? [pair.host]).map((h) => `${h}:${pair.port}`).join(' / ')}
               </span>
               <span className="bots-card__hint">{t('bots.general.pairExpires').replace('{s}', fmtLeft(left))}</span>
               <button className="ext-linkbtn" onClick={makeCode}>

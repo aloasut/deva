@@ -1509,9 +1509,20 @@ const api = {
     getState: (): Promise<GeneralServerView> => ipcRenderer.invoke('general:get-state'),
     /** 生成一次性配对码（5 分钟有效）与二维码（内容 deva://pair?host=…&port=…&code=…）。 */
     pairCode: (): Promise<
-      | { ok: true; code: string; expiresAt: number; qr: string; host: string; port: number }
+      | {
+          ok: true
+          code: string
+          expiresAt: number
+          qr: string
+          host: string
+          hosts: string[]
+          port: number
+          localOnly: boolean
+        }
       | { ok: false; error: string }
     > => ipcRenderer.invoke('general:pair-code'),
+    /** 通道启停开关（设计 §3.1）：关掉即停止监听、不占端口。 */
+    setEnabled: (enabled: boolean): Promise<{ ok: true }> => ipcRenderer.invoke('general:set-enabled', enabled),
     pairCancel: (): Promise<{ ok: true }> => ipcRenderer.invoke('general:pair-cancel'),
     /** 吊销已配对设备（删配置与密钥，此后其请求一律 401）。 */
     removeDevice: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('general:remove-device', id),

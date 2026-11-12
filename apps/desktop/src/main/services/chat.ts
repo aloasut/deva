@@ -1558,6 +1558,13 @@ const mountDeclined = new Set<string>()
  * 渲染层打开会话时也据此接上进行中的回合（chat:attach-session）。
  */
 const busySessions = new Map<string, string>()
+
+const sessionPurgeListeners = new Set<(sessionId: string) => void>()
+/** 会话被彻底删除时回调（channel-server 据此回收该会话的事件缓冲）。返回退订函数。 */
+export function onSessionPurge(cb: (sessionId: string) => void): () => void {
+  sessionPurgeListeners.add(cb)
+  return () => sessionPurgeListeners.delete(cb)
+}
 /** 正在跑回合的会话 → 这一轮开始的时刻（member_status 据此报「已用多久」）。 */
 const busySince = new Map<string, number>()
 
@@ -6148,6 +6155,8 @@ export function registerChatIpc(getWindow: () => BrowserWindow | null): void {
     memberDispatches.delete(sessionId)
     pendingHandoffs.delete(sessionId)
     for (const [g, rec] of memberGroupDone) if (rec.mainId === sessionId) memberGroupDone.delete(g)
+    // 会话删除广播：入站通道（channel-server/sse）据此回收该会话的事件环形缓冲（审查 P1-4）
+    for (const cb of sessionPurgeListeners) try { cb(sessionId) } catch { /* 监听器自吞错误 */ }
   }
   // 删绑定任务时连任务对话一起删（tasks.ts deleteTask）：正在跑的一轮由 purgeSession 中止。
   setTaskSessionPurger(purgeSession)

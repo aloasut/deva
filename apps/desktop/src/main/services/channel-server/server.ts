@@ -16,7 +16,7 @@ import type { ChannelState } from '../remote/types'
 import { deviceIdForToken, invalidateTokenCache } from './auth'
 import { noteDeviceSeen, noteDeviceStream } from './activity'
 import { addDevice, getGeneralServerConfig, type GeneralServerConfig } from './config'
-import { consumePairCodeIfMatch, pairAttemptAllowed } from './pairing'
+import { consumePairCodeIfMatch, notePairFailure, pairAttemptAllowed } from './pairing'
 import { openTurnStream } from './sse'
 
 /**
@@ -259,8 +259,10 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (getGeneralServerConfig().devices.some((d) => nfkc(d.name.trim()) === nfkc(name)))
         return json(res, 409, { error: `设备名「${name}」已被占用，请换一个名字并重新生成配对码。` })
       // 一次性原子消费：校验+作废同步完成，并发同码有且只有一个成功（设计 §3.2）
-      if (!consumePairCodeIfMatch(code))
+      if (!consumePairCodeIfMatch(code)) {
+        notePairFailure()
         return json(res, 400, { error: '配对码不正确或已过期，请在电脑端重新生成。' })
+      }
       const deviceId = genDeviceId()
       const token = randomBytes(32).toString('base64url')
       const saved = await setSecret(`general:${deviceId}:token`, token)

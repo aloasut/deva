@@ -15,6 +15,10 @@ import { noteDeviceStream } from './activity'
  */
 
 const RING_CAPACITY = 2000
+/** 单会话 ring 的字节预算：超出丢最老帧（大帧入环时降级为占位，直播连接已收过完整帧）。 */
+const RING_BYTES = 5 * 1024 * 1024
+/** 超过该字节的帧不入环原文，替换为占位（回放端按未知类型忽略，设计 §3.4）。 */
+const FRAME_MAX_BYTES = 64 * 1024
 /** turnId → sessionId 索引的容量上限（防长期运行无界增长；淘汰最老的）。 */
 const TURN_INDEX_MAX = 2000
 const HEARTBEAT_MS = 15_000
@@ -40,6 +44,7 @@ interface Connection {
 
 let nextId = 1
 const rings = new Map<string, Frame[]>()
+const ringBytes = new Map<string, number>()
 const turnIndex = new Map<string, string>()
 const connections = new Set<Connection>()
 let unsubscribers: (() => void)[] = []
@@ -66,9 +71,23 @@ function push(f: Frame): void {
   if (!ring) {
     ring = []
     rings.set(f.sessionId, ring)
+    ringBytes.set(f.sessionId, 0)
   }
-  ring.push(f)
-  if (ring.length > RING_CAPACITY) ring.splice(0, ring.length - RING_CAPACITY)
+  // 超大帧降级为占位后入环：直播连接已收到完整帧；回放端按未知类型忽略并推进 id（设计 §3.4）
+  let buffered = f.data.length > FRAME_MAX_BYTES
+    ? JSON.stringify({ ...JSON.parse(f.data), type: '__truncated__', dropped: 'oversize' })
+    : f.data
+  ring.push({ ...f, data: buffered })
+  ringBytes.set(f.sessionId, (ringBytes.get(f.sessionId) ?? 0) + buffered.length)
+  // 帧数与字节双上限：超限丢最老帧（客户端有 Last-Event-ID/replay_reset 兜底）
+  if (ring.length > RING_CAPACITY) {
+    const dropped = ring.splice(0, ring.length - RING_CAPACITY)
+    ringBytes.set(f.sessionId, Math.max(0, (ringBytes.get(f.sessionId) ?? 0) - dropped.reduce((n, d) => n + d.data.length, 0)))
+  }
+  while ((ringBytes.get(f.sessionId) ?? 0) > RING_BYTES && ring.length > 1) {
+    const dropped = ring.shift()
+    ringBytes.set(f.sessionId, Math.max(0, (ringBytes.get(f.sessionId) ?? 0) - (dropped?.data.length ?? 0)))
+  }
   if (f.kind === 'chat' && f.turnId && !turnIndex.has(f.turnId)) {
     turnIndex.set(f.turnId, f.sessionId)
     if (turnIndex.size > TURN_INDEX_MAX) {
@@ -80,6 +99,12 @@ function push(f: Frame): void {
 
 function writeFrame(conn: Connection, f: Frame): void {
   if (conn.res.destroyed || conn.res.writableEnded) return
+  // 写背压（审查 P1-5）：停滞连接（进程冻结/死 Wi-Fi）的用户态缓冲无界增长前踢除——
+  // 客户端有 Last-Event-ID 续传 + retry 3s，代价极低
+  if (conn.res.writableLength > 8 * 1024 * 1024) {
+    conn.res.destroy()
+    return
+  }
   conn.res.write(`id: ${f.id}\nevent: ${f.kind}\ndata: ${f.data}\n\n`)
 }
 
@@ -118,6 +143,20 @@ export function startEventStream(): void {
  * replay_reset 语义（设计 §3.4）：Last-Event-ID 早于缓冲最老一帧（超出缓冲）或来自上一进程
  * （计数器已重置）时，发一帧 notice 让客户端重新拉 /messages。
  */
+/** 会话删除后回收 ring 缓冲（chat.ts purgeSession 经 onSessionPurge 调用，审查 P1-4）。 */
+export function dropSession(sessionId: string): void {
+  rings.delete(sessionId)
+  ringBytes.delete(sessionId)
+  for (const [id, sid] of turnIndex) if (sid === sessionId) turnIndex.delete(id)
+}
+
+/** 吊销设备时掐断其全部 SSE 连接（鉴权只在建连时做，必须主动断）。 */
+export function closeDeviceConnections(deviceId: string): void {
+  for (const conn of connections) {
+    if (conn.deviceId === deviceId) conn.res.destroy()
+  }
+}
+
 export function openTurnStream(res: ServerResponse, turnId: string, lastEventId: number, deviceId?: string): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream',

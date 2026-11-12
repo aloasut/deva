@@ -12,10 +12,14 @@ const PAIR_WINDOW_MS = 60_000
 const PAIR_MAX_ATTEMPTS = 10
 
 let current: { code: string; expiresAt: number } | null = null
+/** 连续失败计数：≥20 即熔断配对接口，直到下次主动出码（审查 P1-7——多源地址绕过单 IP 限速的兜底）。 */
+let failStreak = 0
+const FAIL_STREAK_MAX = 20
 /** 同 IP 的尝试时间戳（滑动窗口）。 */
 const attempts = new Map<string, number[]>()
 
 export function issuePairCode(): { code: string; expiresAt: number } {
+  failStreak = 0 // 主动出码即解除熔断：只有桌面用户能出码
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0')
   current = { code, expiresAt: Date.now() + PAIR_TTL_MS }
   return { ...current }
@@ -51,8 +55,14 @@ export function consumePairCodeIfMatch(code: string): boolean {
   return true
 }
 
-/** 滑动窗口限速；放行返回 true，超限 false（HTTP 429）。 */
+/** 配对失败（码不对/已过期）记一次；连续失败触发全局熔断。 */
+export function notePairFailure(): void {
+  failStreak++
+}
+
+/** 滑动窗口限速 + 全局失败熔断；放行返回 true，超限 false（HTTP 429）。 */
 export function pairAttemptAllowed(ip: string): boolean {
+  if (failStreak >= FAIL_STREAK_MAX) return false
   const now = Date.now()
   const list = (attempts.get(ip) ?? []).filter((t) => now - t < PAIR_WINDOW_MS)
   attempts.set(ip, list)
@@ -64,9 +74,15 @@ export function pairAttemptAllowed(ip: string): boolean {
   return true
 }
 
+/** 局域网 IPv4 候选全集（多网卡/VPN 机器上第一个不一定可达，全部给 UI 让用户挑）。 */
+export function lanHosts(): string[] {
+  const out: string[] = []
+  for (const list of Object.values(networkInterfaces()))
+    for (const net of list ?? []) if (net.family === 'IPv4' && !net.internal && !out.includes(net.address)) out.push(net.address)
+  return out
+}
+
 /** 局域网 IPv4（二维码里的 host）：取第一个非内部地址；拿不到则回退 127.0.0.1（同机调试仍可用）。 */
 export function lanHost(): string {
-  for (const list of Object.values(networkInterfaces()))
-    for (const net of list ?? []) if (net.family === 'IPv4' && !net.internal) return net.address
-  return '127.0.0.1'
+  return lanHosts()[0] ?? '127.0.0.1'
 }
