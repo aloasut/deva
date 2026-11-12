@@ -69,6 +69,7 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
     var input by remember { mutableStateOf("") }
     var loadError by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
+    val hasOlder by AppGraph.sessions.hasOlderFlow(sessionId).collectAsState()
 
     val client = AppGraph.client()
 
@@ -86,7 +87,8 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
         Unit
     }
 
-    // 进入会话：回填历史（失败给整屏错误态，可重试 / 401 引导去设置）；有活动回合则恢复订阅
+    // 进入会话：回填历史（失败给整屏错误态，可重试 / 401 引导去设置）；订阅会话级流
+    // （设计 §3.3 会话级 SSE）——桌面/定时任务发起的回合也实时可见（验收线 4）
     LaunchedEffect(sessionId) {
         if (client == null) return@LaunchedEffect
         when (val r = AppGraph.sessions.open(client, sessionId)) {
@@ -94,12 +96,10 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
             is ApiResult.Ok -> loadError = null
         }
         if (loadError != null) return@LaunchedEffect
-        AppGraph.sessions.currentTurn(sessionId)?.let { turn ->
-            AppGraph.sessions.watch(sessionId, turn, onReplayReset = {
-                AppGraph.scope.launch {
-                    AppGraph.sessions.open(AppGraph.client() ?: return@launch, sessionId, force = true)
-                }
-            })
+        AppGraph.sessions.watchSession(sessionId) {
+            AppGraph.scope.launch {
+                AppGraph.sessions.open(AppGraph.client() ?: return@launch, sessionId, force = true)
+            }
         }
     }
 
@@ -175,6 +175,14 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                if (hasOlder) {
+                    item(key = "load-older") {
+                        TextButton(
+                            onClick = { scope.launch { AppGraph.sessions.loadOlder(sessionId) } },
+                            modifier = Modifier.fillMaxWidth()
+                        ) { Text("加载更早") }
+                    }
+                }
                 items(items) { item -> TimelineRow(item, onAnswer, sessionId, snackbar) }
             }
             }
@@ -288,6 +296,12 @@ private fun TimelineRow(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
         )
         is TimelineItem.Deliverable -> DeliverableRow(item, sessionId, snackbar)
+        is TimelineItem.Note -> Text(
+            item.text,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+        )
     }
 }
 

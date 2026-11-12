@@ -48,7 +48,14 @@ data class Backfill(val total: Int, val start: Int, val messages: List<BackfillM
 
 data class PairSuccess(val deviceId: String, val token: String)
 
-data class ServerInfo(val version: String, val hostname: String, val platform: String, val firstRun: Boolean)
+data class ServerInfo(
+    val version: String,
+    val hostname: String,
+    val platform: String,
+    val firstRun: Boolean,
+    /** 服务端协议版本（设计 §3.3 版本化）：pair 与 /api/info 均携带。 */
+    val protocol: Int
+)
 
 /**
  * HTTP 客户端（设计 §3.3 的 REST 面）：配对、info、sessions、messages、send、abort。
@@ -87,7 +94,8 @@ class DevaClient(
                         version = o.optString("version"),
                         hostname = o.optString("hostname"),
                         platform = o.optString("platform"),
-                        firstRun = o.optBoolean("firstRun")
+                        firstRun = o.optBoolean("firstRun"),
+                        protocol = o.optInt("protocol", 1)
                     )
                 )
             }

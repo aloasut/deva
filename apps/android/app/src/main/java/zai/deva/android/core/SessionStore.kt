@@ -10,8 +10,13 @@ import org.json.JSONObject
 
 /**
  * 会话列表与消息缓存（设计 §4）：v1 只用内存，不进 Room。
- * 列表按 updatedAt 倒序（服务端已排）；每会话一份 TimelineBuilder + StateFlow；
- * 离开会话只停流不丢状态，重进用 Last-Event-ID 续传，replay_reset 触发整体回填。
+ * 列表按 updatedAt 倒序（服务端已排）；每会话一份 TimelineBuilder + StateFlow。
+ *
+ * 订阅模型（设计 §3.3 会话级 SSE，通用化修订）：进入会话即订阅**会话级流**
+ * `/api/sessions/:id/events`——该会话任意发起方（本机/桌面/定时任务）的回合都实时
+ * 可见（验收线 4）。回合发现靠 turn_start 自带 turnId（置 active）；done 清位。
+ * 自己发起的回合记入 ownTurns：turn_start 不重复画气泡。离开会话 pause 停流，
+ * 重进用 Last-Event-ID 续传，replay_reset 触发整体回填。
  */
 class SessionStore(
     private val stream: EventStream,
@@ -27,8 +32,15 @@ class SessionStore(
     private data class SessionState(
         val builder: TimelineBuilder,
         val flow: MutableStateFlow<List<TimelineItem>>,
-        /** 正在流式的回合（本机发起，进入会话时据此恢复订阅）；null = 空闲。 */
-        val active: MutableStateFlow<String?> = MutableStateFlow(null)
+        /** 正在运行的回合（任意发起方：turn_start 置位、对应 done 清空）；null = 空闲。 */
+        val active: MutableStateFlow<String?> = MutableStateFlow(null),
+        /** 本机发起的回合 id：turn_start 不重复画气泡（乐观上屏在先）。 */
+        val ownTurns: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap()),
+        /** 已回填区间起点（全量中的 start）；>0 表示还有更早的可加载。 */
+        @Volatile var backfilledStart: Int = 0,
+        val hasOlder: MutableStateFlow<Boolean> = MutableStateFlow(false),
+        /** 会话级流当前订阅目标；null = 未订阅。 */
+        @Volatile var watching: String? = null
     )
 
     private val states = HashMap<String, SessionState>()
@@ -37,13 +49,16 @@ class SessionStore(
     val sessions: StateFlow<List<SessionMeta>> = _sessions
 
     private val _streamState = MutableStateFlow("")
-    /** 当前订阅的连接状态（connecting/live/reconnecting/stopped），仅活动会话有意义。 */
+    /** 当前订阅的连接状态（connecting/live/reconnecting/stopped/unauthorized），仅活动会话有意义。 */
     val streamState: StateFlow<String> = _streamState
 
     fun timeline(sessionId: String): StateFlow<List<TimelineItem>> = state(sessionId).flow
 
-    /** 活动回合流（UI 据此切换 停止/发送 按钮）；done 帧后归 null。 */
+    /** 活动回合流（任意发起方；UI 据此显示停止按钮——桌面/定时任务的回合也能停）。 */
     fun activeTurnFlow(sessionId: String): StateFlow<String?> = state(sessionId).active
+
+    /** 是否还有更早的历史可加载（会话页「加载更早」按钮）。 */
+    fun hasOlderFlow(sessionId: String): StateFlow<Boolean> = state(sessionId).hasOlder
 
     private fun state(sessionId: String): SessionState = synchronized(states) {
         states.getOrPut(sessionId) {
@@ -62,7 +77,7 @@ class SessionStore(
         }
 
     /**
-     * 进入会话：回填历史（已有内容则不重复拉；增量靠 SSE 续传）。
+     * 进入会话：回填历史（已有内容则不重复拉；增量靠会话级 SSE 续传）。
      * force = replay_reset 后的整体回填：清掉流式增量重种。
      */
     suspend fun open(client: DevaClient, sessionId: String, force: Boolean = false): ApiResult<Unit> {
@@ -72,6 +87,28 @@ class SessionStore(
             is ApiResult.Ok -> {
                 st.builder.seedBackfill(r.value.messages)
                 st.flow.value = st.builder.snapshot
+                st.backfilledStart = r.value.start
+                st.hasOlder.value = r.value.start > 0
+                ApiResult.Ok(Unit)
+            }
+            is ApiResult.Err -> r
+        }
+    }
+
+    /** 加载更早的历史（「加载更早」按钮；前插，不动流式增量）。每次向前翻一页(400)。 */
+    suspend fun loadOlder(sessionId: String): ApiResult<Unit> {
+        val st = state(sessionId)
+        val start = st.backfilledStart
+        if (start <= 0) return ApiResult.Ok(Unit)
+        val client = clientProvider() ?: return ApiResult.Err("未连接服务器")
+        return when (val r = client.messages(sessionId, start = 0, limit = start)) {
+            is ApiResult.Ok -> {
+                // 桌面返回 [0, k) 的更早区间(k ≤ limit 上限);剩余部分留给下一次点击
+                val older = r.value.messages
+                st.builder.prependBackfill(older)
+                st.backfilledStart = older.size
+                st.hasOlder.value = st.backfilledStart > 0
+                st.flow.value = st.builder.snapshot
                 ApiResult.Ok(Unit)
             }
             is ApiResult.Err -> r
@@ -79,7 +116,8 @@ class SessionStore(
     }
 
     /**
-     * 本机发送成功后调：乐观上屏用户气泡、标记本回合、开始订阅 SSE。
+     * 本机发送成功后调：乐观上屏用户气泡、标记本回合（ownTurns：turn_start 不重复画）。
+     * 会话级流若未订阅则立即订阅（正常情况下进入会话时已订阅）。
      * onReplayReset 在 SSE 线程回调（调用方自行切协程做整体回填）。
      */
     fun sendStarted(sessionId: String, turnId: String, text: String, onReplayReset: () -> Unit) {
@@ -87,34 +125,21 @@ class SessionStore(
         st.builder.addUser(text)
         st.flow.value = st.builder.snapshot
         st.active.value = turnId
-        watch(sessionId, turnId, onReplayReset)
+        st.ownTurns.add(turnId)
+        if (st.watching != sessionId) watchSession(sessionId, onReplayReset)
     }
 
     /**
-     * 订阅一个回合的 SSE（重进会话恢复活动回合时也走这）。
-     * 帧在 SSE 线程到达：builder 同步化，flow 赋值线程安全；done 后收尾并停流。
+     * 订阅会话级 SSE（设计 §3.3 通用化修订）：进入会话即调，任意发起方的回合实时可见。
+     * 已订阅则幂等跳过。帧在 SSE 线程到达：builder 同步化，flow 赋值线程安全。
      */
-    fun watch(sessionId: String, turnId: String, onReplayReset: () -> Unit) {
+    fun watchSession(sessionId: String, onReplayReset: () -> Unit) {
         val st = state(sessionId)
-        st.active.value = turnId
+        if (st.watching == sessionId) return
+        st.watching = sessionId
         stream.start(
-            turnId,
-            onFrame = { f ->
-                val own = f.data.optString("turnId") == turnId
-                st.builder.onChatEvent(f.data, isOwnTurn = own)
-                st.flow.value = st.builder.snapshot
-                // present_files 成功：清单补拉（toolUseId = 调用 id）；失败把卡标成 failed 保留重试入口
-                if (f.data.optString("type") == "tool_result" &&
-                    f.data.optString("name") == "present_files" &&
-                    !f.data.optBoolean("isError")
-                ) {
-                    fetchDeliveries(sessionId, f.data.optString("id"))
-                }
-                if (f.data.optString("type") == "done" && own) {
-                    st.active.value = null
-                    stream.stop()
-                }
-            },
+            sessionId,
+            onFrame = { f -> onSessionFrame(sessionId, f) },
             onReplayReset = {
                 // 缓冲已断：清空后整体回填（Last-Event-ID 已清零，之后只跟直播）
                 st.builder.seedBackfill(emptyList())
@@ -123,6 +148,29 @@ class SessionStore(
             },
             onState = { s -> _streamState.value = s }
         )
+    }
+
+    /** 会话级流的一帧：active 标记 + builder 渲染 + 交付清单补拉。SSE 线程调用。 */
+    private fun onSessionFrame(sessionId: String, f: SseFrame) {
+        val st = state(sessionId)
+        val type = f.data.optString("type")
+        val turnId = f.data.optString("turnId")
+        // 回合发现（验收线 4）：任意发起方的 turn_start 都置 active（停止按钮出现）；
+        // 对应 done 清位。流式增量在 done 前持续到达。
+        when (type) {
+            "turn_start" -> if (turnId.isNotEmpty()) st.active.value = turnId
+            "done" -> if (turnId.isNotEmpty() && turnId == st.active.value) st.active.value = null
+        }
+        val own = st.ownTurns.contains(turnId)
+        st.builder.onChatEvent(f.data, isOwnTurn = own)
+        st.flow.value = st.builder.snapshot
+        // present_files 成功：清单补拉（toolUseId = 调用 id）；失败把卡标成 failed 保留重试入口
+        if (type == "tool_result" &&
+            f.data.optString("name") == "present_files" &&
+            !f.data.optBoolean("isError")
+        ) {
+            fetchDeliveries(sessionId, f.data.optString("id"))
+        }
     }
 
     /** /deliveries 补拉（IO 协程；结果回填走 builder 的同步方法，Err 把卡标成 failed 保留提示）。 */
@@ -152,8 +200,10 @@ class SessionStore(
     /** 停止当前订阅（离开会话时调；builder 与 lastEventId 保留，重进可续传）。 */
     fun pause() {
         stream.stop()
+        // watching 清零:重进时重新订阅(Last-Event-ID 续传)
+        states.values.forEach { it.watching = null }
     }
 
-    /** 活动回合（本会话正在流式的 turnId；null = 空闲可发/无需停止）。 */
+    /** 活动回合（本会话正在运行的 turnId，任意发起方；null = 空闲）。 */
     fun currentTurn(sessionId: String): String? = state(sessionId).active.value
 }

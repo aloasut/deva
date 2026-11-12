@@ -22,6 +22,31 @@ export interface GeneralServerConfig {
   devices: GeneralDevice[]
 }
 
+/** 设备名净化：去 C0/C1 控制符、bidi 覆写与零宽字符，截断 40 字符（配对与改名共用）。 */
+export function sanitizeDeviceName(raw: string): string {
+  return raw
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '')
+    .trim()
+    .slice(0, 40)
+}
+
+/** 唯一性比较口径：NFKC 归一化后不分大小写。 */
+function nfkcName(v: string): string {
+  return v.normalize('NFKC').trim().toLowerCase()
+}
+
+/** 改名：净化 + 全局唯一（NFKC 不分大小写），自身除外。 */
+export function renameDevice(id: string, rawName: string): { ok: true } | { ok: false; error: string } {
+  const name = sanitizeDeviceName(rawName)
+  if (!name) return { ok: false, error: '设备名不能为空。' }
+  const cfg = getGeneralServerConfig()
+  if (!cfg.devices.some((d) => d.id === id)) return { ok: false, error: '设备不存在。' }
+  if (cfg.devices.some((d) => d.id !== id && nfkcName(d.name) === nfkcName(name)))
+    return { ok: false, error: `设备名「${name}」已被占用。` }
+  write({ ...cfg, devices: cfg.devices.map((d) => (d.id === id ? { ...d, name } : d)) })
+  return { ok: true }
+}
+
 export const DEFAULT_ANDROID_PORT = 4317
 
 const DEFAULTS: Omit<GeneralServerConfig, 'devices'> = {

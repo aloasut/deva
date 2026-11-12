@@ -227,15 +227,24 @@ private fun SessionRow(s: SessionMeta, onClick: () -> Unit) {
                     style = MaterialTheme.typography.bodyLarge,
                     maxLines = 1
                 )
-                Text(
-                    DateUtils.getRelativeTimeSpanString(
-                        s.updatedAt,
-                        System.currentTimeMillis(),
-                        DateUtils.MINUTE_IN_MILLIS
-                    ).toString(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (s.archived) {
+                        Text(
+                            "已归档",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        DateUtils.getRelativeTimeSpanString(
+                            s.updatedAt,
+                            System.currentTimeMillis(),
+                            DateUtils.MINUTE_IN_MILLIS
+                        ).toString(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             if (s.busy) {
                 CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)

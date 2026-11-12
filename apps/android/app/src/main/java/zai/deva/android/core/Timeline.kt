@@ -29,6 +29,8 @@ sealed interface TimelineItem {
     data class Tool(val id: String, val name: String, val summary: String?) : TimelineItem
     /** resolved = null 未决（可作答）；否则为收起后的一句话终态（已作答 / 已批准 / 已取消…）。 */
     data class Card(val payload: CardPayload, val resolved: String?) : TimelineItem
+    /** 系统提示行（usage / insert / auto_retry / todos 等小事件，设计 §3.4 最小映射集）。 */
+    data class Note(val text: String) : TimelineItem
     /**
      * 交付文件卡（present_files，设计 §5-5）。files 为空且未失败 = 清单加载中；
      * failed = 清单没拉到（保留可重试的空卡）。
@@ -59,21 +61,33 @@ class TimelineBuilder {
     @Synchronized
     fun seedBackfill(msgs: List<BackfillMsg>) {
         items.clear()
-        for (m in msgs) {
-            if (m.role == "user") {
-                m.text?.let { items.add(TimelineItem.Text(it, fromUser = true)) }
-            } else {
-                m.text?.let { items.add(TimelineItem.Text(it, fromUser = false)) }
-                for (t in m.tools) items.add(TimelineItem.Tool(id = "hist:$t", name = t, summary = "已完成"))
-                // 交付卡随历史还原（服务端已把 present_files 从 tools 里剔除，此处独立成卡）
-                if (m.files.isNotEmpty()) items.add(TimelineItem.Deliverable("hist:${m.i}", m.files))
-                if (m.attachments > 0) {
-                    items.add(TimelineItem.Text("（含 ${m.attachments} 个附件）", fromUser = m.role == "user"))
-                }
-                // 未决卡随历史还原（已答的卡服务端不回填，只留普通工具行）
-                m.card?.let { items.add(TimelineItem.Card(it.toPayload(), resolved = null)) }
+        for (m in msgs) items.addAll(renderBackfill(m))
+    }
+
+    /** 加载更早：把更早区间前插到列表头部（流式增量在尾部，不受影响）。 */
+    @Synchronized
+    fun prependBackfill(msgs: List<BackfillMsg>) {
+        val addition = msgs.flatMap { renderBackfill(it) }
+        items.addAll(0, addition)
+    }
+
+    /** 回填条目 → 展示节点（seed 与 prepend 共用）。 */
+    private fun renderBackfill(m: BackfillMsg): List<TimelineItem> {
+        val out = mutableListOf<TimelineItem>()
+        if (m.role == "user") {
+            m.text?.let { out.add(TimelineItem.Text(it, fromUser = true)) }
+        } else {
+            m.text?.let { out.add(TimelineItem.Text(it, fromUser = false)) }
+            for (t in m.tools) out.add(TimelineItem.Tool(id = "hist:$t", name = t, summary = "已完成"))
+            // 交付卡随历史还原（服务端已把 present_files 从 tools 里剔除，此处独立成卡）
+            if (m.files.isNotEmpty()) out.add(TimelineItem.Deliverable("hist:${m.i}", m.files))
+            if (m.attachments > 0) {
+                out.add(TimelineItem.Text("（含 ${m.attachments} 个附件）", fromUser = m.role == "user"))
             }
+            // 未决卡随历史还原（已答的卡服务端不回填，只留普通工具行）
+            m.card?.let { out.add(TimelineItem.Card(it.toPayload(), resolved = null)) }
         }
+        return out
     }
 
     /** 本机发出的消息：send 成功后乐观上屏（同回合的 turn_start 据此去重）。 */
@@ -140,6 +154,43 @@ class TimelineBuilder {
             }
             "interaction_resolved" -> resolveCard(data)
             "stream_reset" -> dropStepPartial()
+            "insert" -> {
+                val text = data.optString("text")
+                if (text.isNotEmpty()) items.add(TimelineItem.Note("↩ 插入：$text"))
+            }
+            "auto_retry" -> {
+                val attempt = data.optInt("attempt", 0)
+                val max = data.optInt("max", 0)
+                items.add(TimelineItem.Note(if (max > 0) "⚠ 自动重试中（$attempt/$max）…" else "⚠ 自动重试中…"))
+            }
+            "todos" -> {
+                // 设计 §3.4 最小映射集：待办清单只读展示（active=null = 全部完成/取消，撤下节点）
+                val active = data.optJSONObject("state")?.optJSONObject("active")
+                val todoIdx = items.indexOfFirst { it is TimelineItem.Note && it.text.startsWith("☐") }
+                if (active == null) {
+                    if (todoIdx >= 0) items.removeAt(todoIdx)
+                } else {
+                    val title = active.optString("title")
+                    val lines = StringBuilder()
+                    val itemsArr = active.optJSONArray("items") ?: org.json.JSONArray()
+                    for (i in 0 until itemsArr.length()) {
+                        val item = itemsArr.optJSONObject(i) ?: continue
+                        val mark = when (item.optString("status")) {
+                            "completed" -> "☑"
+                            "in_progress" -> "▶"
+                            else -> "☐"
+                        }
+                        lines.append('\n').append(mark).append(' ').append(item.optString("content"))
+                    }
+                    val node = TimelineItem.Note("☐ $title${lines}")
+                    if (todoIdx >= 0) items[todoIdx] = node else items.add(node)
+                }
+            }
+            "usage" -> {
+                val input = data.optLong("input", -1)
+                val output = data.optLong("output", -1)
+                if (input >= 0 && output >= 0) items.add(TimelineItem.Note("ℹ 用量：输入 $input · 输出 $output tokens"))
+            }
             "error" -> items.add(TimelineItem.Error(data.optString("message")))
             // done / usage / todos / compacted 等：P2 不展示（done 由 SessionStore 消费以收尾状态）
             else -> unknownEvents++

@@ -15,9 +15,9 @@ import { isEffortLevel } from '../../../shared/effort'
 import type { ChannelState } from '../remote/types'
 import { deviceIdForToken, invalidateTokenCache } from './auth'
 import { noteDeviceSeen, noteDeviceStream } from './activity'
-import { addDevice, getGeneralServerConfig, type GeneralServerConfig } from './config'
+import { addDevice, getGeneralServerConfig, sanitizeDeviceName, type GeneralServerConfig } from './config'
 import { consumePairCodeIfMatch, notePairFailure, pairAttemptAllowed } from './pairing'
-import { openTurnStream } from './sse'
+import { openSessionStream, openTurnStream } from './sse'
 
 /**
  * 入站 HTTP 服务器（node:http，REST + SSE 同一监听，设计 §3.1/3.3）。
@@ -62,6 +62,19 @@ function readJson<T>(req: IncomingMessage, limit = 64 * 1024): Promise<T | null>
     req.on('error', () => resolve(null))
   })
 }
+
+/** 协议版本与能力集：/api/info 与 pair 响应携带，设备端据此协商（设计 §3.3 版本化）。 */
+const PROTOCOL_VERSION = 1
+const PROTOCOL_CAPABILITIES = [
+  'turn-stream',
+  'session-stream',
+  'answers',
+  'deliveries',
+  'files',
+  'set-host',
+  'set-enabled',
+  'rename-device'
+] as const
 
 function genDeviceId(): string {
   return `dev_${Date.now().toString(36)}_${randomInt(0, 36 ** 4).toString(36)}`
@@ -247,16 +260,15 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const code = typeof body?.code === 'string' ? body.code.trim() : ''
       if (!code) return json(res, 400, { error: '缺少配对码。' })
       // 一次性原子消费：校验+作废同步完成，并发同码有且只有一个成功（设计 §3.2）
-      // 设备名先于配对码消费：净化（去 C0/C1 控制符、bidi 覆写与零宽字符）+ 截断，
-      // 重名（NFKC 归一化后不分大小写）即 409 且不烧一次性码——设备端换名后同码可重试。
+      // 设备名先于配对码消费：净化 + 唯一性（NFKC 不分大小写，config.ts 共用助手），
+      // 重名即 409 且不烧一次性码——设备端换名后同码可重试。
       const rawName = typeof body?.deviceName === 'string' ? body.deviceName : ''
-      const name =
-        rawName
-          .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u206f]/g, '')
-          .trim()
-          .slice(0, 40) || '通用设备'
-      const nfkc = (v: string): string => v.normalize('NFKC').toLowerCase()
-      if (getGeneralServerConfig().devices.some((d) => nfkc(d.name.trim()) === nfkc(name)))
+      const name = sanitizeDeviceName(rawName) || '通用设备'
+      if (
+        getGeneralServerConfig().devices.some(
+          (d) => d.name.normalize('NFKC').trim().toLowerCase() === name.normalize('NFKC').toLowerCase()
+        )
+      )
         return json(res, 409, { error: `设备名「${name}」已被占用，请换一个名字并重新生成配对码。` })
       // 一次性原子消费：校验+作废同步完成，并发同码有且只有一个成功（设计 §3.2）
       if (!consumePairCodeIfMatch(code)) {
@@ -270,7 +282,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         return json(res, 500, { error: '系统密钥存储不可用，无法安全保存设备凭据。' })
       addDevice({ id: deviceId, name, pairedAt: Date.now() })
       invalidateTokenCache()
-      return json(res, 200, { deviceId, token })
+      return json(res, 200, {
+        deviceId,
+        token,
+        protocol: PROTOCOL_VERSION,
+        capabilities: PROTOCOL_CAPABILITIES
+      })
     }
 
     // ── 鉴权中间件：其余一律 Bearer token（设计 §3.2）──
@@ -286,7 +303,9 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         version: app.getVersion(),
         hostname: hostname(),
         platform: process.platform,
-        firstRun: listSessions().length === 0
+        firstRun: listSessions().length === 0,
+        protocol: PROTOCOL_VERSION,
+        capabilities: PROTOCOL_CAPABILITIES
       })
 
     // GET /api/sessions：会话列表（转发 chat-store；成员会话不进手机列表，与 hub /list 同口径）
@@ -411,6 +430,20 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (!rt) return json(res, 503, { error: 'Deva 还没准备好，请稍后再试。' })
       rt.abort(mAbort[1])
       return json(res, 200, { ok: true })
+    }
+
+    // GET /api/sessions/:id/events：会话级 SSE（设计 §3.3 通用化修订）——投递该会话全部
+    // 回合的 chat 帧 + 通知，设备端据此实时看到任意发起方的回合（验收线 4）
+    const mSessEvents = url.pathname.match(/^\/api\/sessions\/([^/]+)\/events$/)
+    if (mSessEvents && method === 'GET') {
+      const sid = decodeSegment(mSessEvents[1])
+      if (sid === null || !getSession(sid)) return json(res, 404, { error: '会话不存在。' })
+      const h = req.headers['last-event-id']
+      const raw = Array.isArray(h) ? h[0] : h
+      const parsed = Number.parseInt(raw ?? '', 10)
+      noteDeviceStream(deviceId, true)
+      openSessionStream(res, sid, Number.isFinite(parsed) ? parsed : 0, deviceId)
+      return
     }
 
     // GET /api/sessions/:id/messages：历史回填（投影展示条目；?start=&limit= 向后翻页，默认返回最新一段）

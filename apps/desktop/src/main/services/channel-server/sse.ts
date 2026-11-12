@@ -39,6 +39,8 @@ interface Connection {
   deviceId?: string
   /** 首个本回合事件到达后锁定其会话；会话级事件只投给已锁定会话的连接。 */
   sessionId?: string
+  /** 会话级订阅（/api/sessions/:id/events）：投递该会话全部回合的 chat 帧 + 通知。 */
+  sessionLevel?: boolean
   heartbeat: ReturnType<typeof setInterval>
 }
 
@@ -55,6 +57,9 @@ function lockSession(conn: Connection, f: Frame): void {
 }
 
 function matches(conn: Connection, f: Frame): boolean {
+  // 会话级订阅（设计 §3.3 通用化修订）：该会话的一切帧（全部回合 + 通知）都投递——
+  // 设备端据此实时看到任意发起方的回合（验收线 4）
+  if (conn.sessionLevel) return f.sessionId === conn.sessionId
   // 本回合的事件
   if (f.kind === 'chat' && f.turnId === conn.turnId) return true
   // 已锁定会话后的：该会话的会话级事件（turnId 为空串）与会话通知
@@ -155,6 +160,52 @@ export function closeDeviceConnections(deviceId: string): void {
   for (const conn of connections) {
     if (conn.deviceId === deviceId) conn.res.destroy()
   }
+}
+
+/**
+ * 会话级 SSE（设计 §3.3 通用化修订）：投递该会话全部回合的 chat 帧 + 通知。
+ * 设备端据此实时看到任意发起方的回合（验收线 4）——回合发现靠 turn_start 自带 turnId。
+ * 连接常开（done 不关闭），离开由客户端断开；Last-Event-ID/replay_reset 语义与回合流一致。
+ */
+export function openSessionStream(res: ServerResponse, sessionId: string, lastEventId: number, deviceId?: string): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no'
+  })
+  res.write('retry: 3000\n\n')
+
+  const conn: Connection = {
+    res,
+    turnId: '',
+    sessionId,
+    sessionLevel: true,
+    heartbeat: setInterval(() => {
+      if (!res.destroyed && !res.writableEnded) res.write(': ping\n\n')
+    }, HEARTBEAT_MS)
+  }
+  connections.add(conn)
+
+  if (lastEventId > 0) {
+    const ring = rings.get(sessionId)
+    const stale = lastEventId >= nextId || !ring || ring.length === 0 || lastEventId + 1 < ring[0].id
+    if (stale) {
+      writeFrame(conn, {
+        id: nextId++,
+        kind: 'notice',
+        data: JSON.stringify({ type: 'replay_reset', sessionId })
+      })
+    } else {
+      for (const f of ring) if (f.id > lastEventId && f.sessionId === sessionId) writeFrame(conn, f)
+    }
+  }
+
+  res.on('close', () => {
+    clearInterval(conn.heartbeat)
+    connections.delete(conn)
+    if (deviceId) noteDeviceStream(deviceId, false)
+  })
 }
 
 export function openTurnStream(res: ServerResponse, turnId: string, lastEventId: number, deviceId?: string): void {

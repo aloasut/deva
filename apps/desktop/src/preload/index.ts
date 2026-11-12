@@ -1523,6 +1523,9 @@ const api = {
     > => ipcRenderer.invoke('general:pair-code'),
     /** 通道启停开关（设计 §3.1）：关掉即停止监听、不占端口。 */
     setEnabled: (enabled: boolean): Promise<{ ok: true }> => ipcRenderer.invoke('general:set-enabled', enabled),
+    /** 设备改名：净化 + 全局唯一（NFKC 不分大小写）。 */
+    renameDevice: (id: string, name: string): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('general:rename-device', id, name),
     pairCancel: (): Promise<{ ok: true }> => ipcRenderer.invoke('general:pair-cancel'),
     /** 吊销已配对设备（删配置与密钥，此后其请求一律 401）。 */
     removeDevice: (id: string): Promise<{ ok: true }> => ipcRenderer.invoke('general:remove-device', id),

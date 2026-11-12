@@ -3,7 +3,7 @@ import QRCode from 'qrcode'
 import type { ChannelState } from '../remote/types'
 import { deleteSecretsByPrefix } from '../secrets'
 import { invalidateTokenCache } from './auth'
-import { getGeneralServerConfig, patchGeneralServer, removeDevice } from './config'
+import { getGeneralServerConfig, patchGeneralServer, removeDevice, renameDevice } from './config'
 import { cancelPairCode, issuePairCode, lanHost, lanHosts } from './pairing'
 import { startServer, stopServer } from './server'
 import { closeDeviceConnections, dropSession, startEventStream, stopEventStream } from './sse'
@@ -134,6 +134,9 @@ export function registerChannelServerIpc(): void {
     }
   )
 
+  // 设备改名：净化 + 全局唯一（config.renameDevice），两端面板实时可见（5s 轮询）
+  ipcMain.handle('general:rename-device', (_e, id: string, rawName: string) => renameDevice(id, rawName))
+
   // 通道启停开关（设计 §3.1）：enabled=false 即停止监听、不占端口
   ipcMain.handle('general:set-enabled', (_e, enabled: boolean): { ok: true } => {
     patchGeneralServer({ enabled })
@@ -169,15 +172,6 @@ export function registerChannelServerIpc(): void {
 
   // 会话删除 → 回收该会话的事件环形缓冲（审查 P1-4）
   onSessionPurge(dropSession)
-
-  // 通道启停开关（设计 §3.1）：enabled=false 即停止监听、不占端口
-  ipcMain.handle('general:set-enabled', (_e, enabled: boolean): { ok: true } => {
-    patchGeneralServer({ enabled })
-    void stopChannelServer()
-      .then(() => startChannelServer())
-      .catch((e) => console.warn('[channel-server] 重启监听失败：', (e as Error)?.message ?? e))
-    return { ok: true }
-  })
 
   // 随主进程启动（enabled=false 或端口冲突都只置状态、记日志，不阻塞启动）
   void startChannelServer().catch((e) => console.warn('[channel-server] 启动失败：', (e as Error)?.message ?? e))
