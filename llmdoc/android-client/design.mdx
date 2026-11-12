@@ -68,7 +68,7 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 
 ### 3.2 鉴权与配对（必须先于任何会话语义）
 
-- 首次启用时生成一次性**配对码**（6 位数字，5 分钟有效），在桌面「设置 → 远程设备」显示，并附二维码（内容：`deva://pair?host=<host>&port=<port>&code=<code>`）。
+- 首次启用时生成一次性**配对码**（6 位数字，5 分钟有效），在桌面「机器人」面板的「安卓设备」入口显示（实现落点：renderer BotsPane，原计划「设置 → 远程设备」处无对应信息架构），并附二维码（内容：`deva://pair?host=<host>&port=<port>&code=<code>`）。
 - 手机 `POST /api/pair { code, deviceName, devicePubKey }` → 返回 `{ deviceId, token }`；token 为随机 32 字节，落盘 `secrets.json`，键 `android:<deviceId>:token`（沿用现有 secrets 约定，**不复用 `remote:<botId>:*`**）。
 - 之后所有请求带 `Authorization: Bearer <token>`；token 可在桌面端吊销（`DELETE /api/devices/:id`）。
 - 失败限速：同 IP 每分钟 10 次配对尝试，超限 429。
@@ -110,7 +110,7 @@ data: {"sessionId":"...","turnId":"...","type":"text_delta","text":"..."}
 ### 3.5 生命周期
 
 - 启停挂在主进程启动/退出时序上，位于 `stopAllChannels()` 之后停止（先停出站通道再停入站）。
-- 状态纳入 `ChannelState` 同形的状态机（`off / connecting / connected / error`），桌面「远程设备」面板显示在线设备数与最近活动时间。
+- 状态纳入 `ChannelState` 同形的状态机（`off / connecting / connected / error`），桌面「机器人」面板的「安卓设备」详情显示通道状态、监听地址与已配对设备（配对时间 + 吊销）。
 - 崩溃/异常不得影响聊天主流程：通道内部所有错误只上报状态，不抛给 chatRuntime。
 
 ## 4. 安卓端结构
@@ -177,7 +177,7 @@ app/src/main/java/zai/deva/android/
 ## 8. 与现有代码的边界（实现纪律）
 
 - **不改** `chat.ts` 的回合语义、`tools-policy` 的权限判定、`hub.ts` 的 IM 绑定逻辑。
-- 新增文件只落在 `channel-server/`、`src/preload` 的少量新增 IPC（用于桌面端显示配对码/设备列表）、`renderer` 的设置页一处面板。
+- 新增文件只落在 `channel-server/`、`src/preload` 的少量新增 IPC（用于桌面端显示配对码/设备列表）、`renderer` 机器人面板的「安卓设备」入口（BotsPane + i18n）。
 - 安卓工程放在 `apps/android/`（与 `apps/desktop` 平级），独立 Gradle 工程，不进 pnpm workspace。
 - 任何对 `ChatStreamEvent` 的修改都要同步本文 §3.4 的表。
 
