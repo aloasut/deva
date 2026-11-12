@@ -7,7 +7,7 @@ import { app } from 'electron'
 import { getChatRuntime, parseAskQuestions } from '../chat'
 import { ensureSession, getSession, listSessions, save as saveProject } from '../chat-store'
 import type { StoredSession } from '../chat-store'
-import { resolveDefaultEffort, resolveDefaultModel, resolveModelRefOrNull } from '../model-resolve'
+import { resolveDefaultEffort, resolveModelRefForSend } from '../model-resolve'
 import { getPersona } from '../personas'
 import { setSecret } from '../secrets'
 import type { Message } from '../../providers/types'
@@ -356,11 +356,12 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       if (!session) return json(res, 404, { error: '会话不存在。' })
       const persona = session.personaId ? getPersona(session.personaId) : null
       const explicitRef = typeof body?.modelRef === 'string' && body.modelRef ? body.modelRef : null
-      const model =
-        (explicitRef ? resolveModelRefOrNull(explicitRef) : null) ??
-        resolveModelRefOrNull(session.model) ??
-        resolveModelRefOrNull(persona?.model) ??
-        resolveDefaultModel()
+      // 模型解析链与 hub 同源（model-resolve.resolveModelRefForSend，审查 F3 消漂移）
+      const model = resolveModelRefForSend({
+        explicitRef: typeof body?.modelRef === 'string' && body.modelRef ? body.modelRef : null,
+        sessionModel: session.model,
+        personaModel: persona?.model ?? null
+      })
       if (!model) return json(res, 400, { error: '还没有可用的模型，请先在电脑端的设置里配置并选定模型。' })
       const attachments = Array.isArray(body?.attachments)
         ? body.attachments.filter((a): a is string => typeof a === 'string' && a.length > 0)

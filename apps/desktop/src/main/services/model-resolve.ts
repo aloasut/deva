@@ -133,6 +133,23 @@ export function resolveDefaultModel(): ResolvedModel | null {
  * 解析全局「最近使用」思考等级（`config.models.activeEffort`，用户最近一次在对话输入框选定的档位）。
  * 供不经渲染层的发送（远程通道）给尚未定格思考等级的对话兜底。无配置 / 非法值 → 'default'（不发思考参数）。
  */
+/**
+ * 入站发送共用的模型解析链（审查 F3）：显式 modelRef → 会话快照 → 角色偏好 → 全局默认。
+ * hub（IM）与 channel-server 调同一份，杜绝两处手写漂移。
+ */
+export function resolveModelRefForSend(opts: {
+  explicitRef?: string | null
+  sessionModel?: string | null
+  personaModel?: string | null
+}): ResolvedModel | null {
+  return (
+    (opts.explicitRef ? resolveModelRefOrNull(opts.explicitRef) : null) ??
+    resolveModelRefOrNull(opts.sessionModel ?? null) ??
+    resolveModelRefOrNull(opts.personaModel ?? null) ??
+    resolveDefaultModel()
+  )
+}
+
 export function resolveDefaultEffort(): EffortLevel {
   try {
     const models = (getConfig().models ?? {}) as { activeEffort?: unknown }

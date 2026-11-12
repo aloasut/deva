@@ -8,6 +8,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -47,6 +48,10 @@ class DevaApp : Application(), DefaultLifecycleObserver {
 object AppGraph {
 
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    /** deva://pair 深链带来的预填(host/port/code);SettingsScreen 消费后清空。 */
+    data class GeneralPairLink(val host: String, val port: Int, val code: String)
+    val pendingPairLink = MutableStateFlow<GeneralPairLink?>(null)
 
     /** REST 复用一个 client（连接池共享）。 */
     private val restHttp = OkHttpClient()

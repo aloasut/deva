@@ -38,6 +38,7 @@ android {
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.navigation:navigation-compose:2.8.5")
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))

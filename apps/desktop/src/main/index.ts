@@ -337,7 +337,7 @@ if (!app.requestSingleInstanceLock()) {
   registerRemoteIpc(() => mainWindow)
 
   // 安卓客户端入站通道（局域网 HTTP + SSE；Bearer 鉴权，配对后可用）。与远程通道共用会话总线，也须在 chat 之后。
-  registerChannelServerIpc()
+  registerChannelServerIpc(() => mainWindow)
 
   // 检查点清扫（异步不阻塞启动）：删已不存在会话的备份目录、超 30 天的 blob 与残留临时文件
   void sweepCheckpoints(listSessions().map((m) => m.id)).catch((e) =>

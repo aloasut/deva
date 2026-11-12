@@ -2,6 +2,7 @@ package zai.deva.android.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -29,9 +30,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.exifinterface.media.ExifInterface
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -180,11 +183,19 @@ private fun DeliverableImage(
     onClick: () -> Unit,
     onLongPress: () -> Unit
 ) {
-    var bmp by remember(file.path) { mutableStateOf<ImageBitmap?>(null) }
+    // 先查进程级缓存(LazyColumn 滚动回收后滑回零开销),未命中才走网络
+    var bmp by remember(file.path) { mutableStateOf(deliverableImageCache.get(file.path)) }
     LaunchedEffect(file.path) {
+        if (bmp != null) return@LaunchedEffect
         val client = AppGraph.client() ?: return@LaunchedEffect
         when (val r = client.fileBytes(file.path, sessionId)) {
-            is ApiResult.Ok -> bmp = withContext(Dispatchers.Default) { decodeScaled(r.value) }
+            is ApiResult.Ok -> {
+                val decoded = withContext(Dispatchers.Default) { decodeScaled(r.value) }
+                if (decoded != null) {
+                    deliverableImageCache.put(file.path, decoded)
+                    bmp = decoded
+                }
+            }
             is ApiResult.Err -> Unit
         }
     }
@@ -202,15 +213,36 @@ private fun DeliverableImage(
     }
 }
 
-/** 长边压到 ≤1024 的解码（inSampleSize 粗采样，足够预览，省内存）。 */
+/** 长边压到 ≤1280 的解码（inSampleSize 粗采样）+ EXIF 旋转修正（手机原片横竖颠倒）。 */
 private fun decodeScaled(bytes: ByteArray): ImageBitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
     var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 1024) sample *= 2
+    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 1280) sample *= 2
     val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)?.asImageBitmap()
+    val src = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
+    val rotation = when (
+        ExifInterface(java.io.ByteArrayInputStream(bytes)).getAttributeInt(
+            ExifInterface.TAG_ORIENTATION,
+            ExifInterface.ORIENTATION_NORMAL
+        )
+    ) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+        ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+        ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+        else -> 0f
+    }
+    val bmp = if (rotation == 0f) src else {
+        val m = android.graphics.Matrix().apply { postRotate(rotation) }
+        Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+    }
+    return bmp.asImageBitmap()
+}
+
+/** 交付图片内存缓存(LruCache,字节预算 48MB):滚动回收后滑回零开销,消重复下载与解码(OOM 风险)。 */
+private val deliverableImageCache = object : android.util.LruCache<String, ImageBitmap>(48 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: ImageBitmap): Int = value.asAndroidBitmap().byteCount
 }
 
 internal fun humanSize(size: Long?): String = when {

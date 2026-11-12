@@ -41,11 +41,15 @@ export function BotsPane(): React.JSX.Element {
   // 「+」菜单选通用设备时的自动出码信号
   const [generalPairTick, setGeneralPairTick] = useState(0)
 
-  // 通用设备通道状态（channel-server）：5s 轮询，手机配对后列表角标与状态自动更新
+  // 通用设备通道状态（channel-server）：general:changed 推送为主，30s 轮询兜底
   useEffect(() => {
     void window.deva.general.getState().then(setGeneral)
-    const id = window.setInterval(() => void window.deva.general.getState().then(setGeneral), 5000)
-    return () => window.clearInterval(id)
+    const off = window.deva.general.onChanged(setGeneral)
+    const id = window.setInterval(() => void window.deva.general.getState().then(setGeneral), 30_000)
+    return () => {
+      off()
+      window.clearInterval(id)
+    }
   }, [])
 
   useEffect(() => {
@@ -118,7 +122,7 @@ export function BotsPane(): React.JSX.Element {
               <div className="cf-trow__title">{t('bots.general.title')}</div>
               <div className="bots-row__meta">
                 <span className={`bots-dot bots-dot--${general?.state ?? 'off'}`} />
-                {t(`bots.state.${general?.state ?? 'off'}`)}
+                {t(`bots.general.stateLabel.${general?.state ?? 'off'}`)}
                 {general && (
                   <span className="bots-tag">
                     {general.devices.filter((d) => d.online).length}/{general.devices.length}
@@ -893,10 +897,10 @@ function GeneralDetail({ pairRequest }: { pairRequest: number }): React.JSX.Elem
     void window.deva.general.getState().then(setSt)
   }, [])
 
+  // general:changed 推送到达时 reload(getChannelServerState 全量刷新)
   useEffect(() => {
     reload()
-    const id = window.setInterval(reload, 5000)
-    return () => window.clearInterval(id)
+    return window.deva.general.onChanged(() => reload())
   }, [reload])
 
   // 配对码倒计时；过期自动收起

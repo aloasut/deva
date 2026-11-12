@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { BrowserWindow, ipcMain } from 'electron'
 import QRCode from 'qrcode'
 import type { ChannelState } from '../remote/types'
 import { deleteSecretsByPrefix } from '../secrets'
@@ -7,9 +7,8 @@ import { getGeneralServerConfig, patchGeneralServer, removeDevice, renameDevice 
 import { cancelPairCode, issuePairCode, lanHost, lanHosts } from './pairing'
 import { startServer, stopServer } from './server'
 import { closeDeviceConnections, dropSession, startEventStream, stopEventStream } from './sse'
-import { dropDevice } from './activity'
+import { dropDevice, deviceActivity } from './activity'
 import { onSessionPurge } from '../chat'
-import { deviceActivity } from './activity'
 
 /**
  * 安卓客户端的入站通道（设计 §3）：把已存在的 chatRuntime / chat-bus 暴露给已配对设备。
@@ -41,10 +40,16 @@ let stateError: string | undefined
 let running = false
 const listeners = new Set<() => void>()
 
+/** 渲染层窗口引用（registerChannelServerIpc 注入）：状态变化即推 general:changed。 */
+let getWindowFn: () => BrowserWindow | null = () => null
+
 function setState(s: ChannelState, error?: string): void {
   state = s
   stateError = error
   for (const l of listeners) l()
+  // 推送到渲染层（机器人面板订阅，替代轮询；审查 F7）
+  const w = getWindowFn()
+  if (w && !w.isDestroyed()) w.webContents.send('general:changed', getChannelServerState())
 }
 
 export function getChannelServerState(): GeneralServerView {
@@ -100,7 +105,8 @@ export async function stopChannelServer(): Promise<void> {
   setState('off')
 }
 
-export function registerChannelServerIpc(): void {
+export function registerChannelServerIpc(getWindow: () => BrowserWindow | null = () => null): void {
+  getWindowFn = getWindow
   ipcMain.handle('general:get-state', (): GeneralServerView => getChannelServerState())
 
   // 生成一次性配对码 + 二维码（内容 deva://pair?host=<host>&port=<port>&code=<code>，设计 §3.2）

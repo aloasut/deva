@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,6 +70,18 @@ fun SettingsScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var showAdd by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<ServerConfig?>(null) }
+
+    var prefillCode by remember { mutableStateOf<String?>(null) }
+
+    // deva://pair 深链预填:确保 host:port 条目存在并选中,码预填进配对面板
+    LaunchedEffect(Unit) {
+        val link = AppGraph.pendingPairLink.value ?: return@LaunchedEffect
+        AppGraph.pendingPairLink.value = null
+        val target = servers.firstOrNull { it.host == link.host && it.port == link.port }
+        val sid = target?.id ?: AppGraph.servers.add("", link.host, link.port).also { AppGraph.servers.setCurrent(it.id) }.id
+        AppGraph.servers.setCurrent(sid)
+        prefillCode = link.code
+    }
 
     Scaffold(
         topBar = {
@@ -142,7 +155,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             item {
                 val cur = servers.firstOrNull { it.id == currentId }
                 if (cur != null) {
-                    PairPanel(server = cur, snackbar = snackbar, scope = scope)
+                    PairPanel(server = cur, snackbar = snackbar, scope = scope, prefillCode = prefillCode)
                 }
             }
 
@@ -274,10 +287,15 @@ private fun AboutCard() {
 private fun PairPanel(
     server: ServerConfig,
     snackbar: SnackbarHostState,
-    scope: kotlinx.coroutines.CoroutineScope
+    scope: kotlinx.coroutines.CoroutineScope,
+    prefillCode: String? = null
 ) {
     var deviceName by remember { mutableStateOf(defaultDeviceName()) }
     var code by remember { mutableStateOf("") }
+    // deva:// 深链预填:扫码进入时自动填好 6 位码,用户只需点「重新配对」
+    LaunchedEffect(prefillCode) {
+        if (!prefillCode.isNullOrEmpty()) code = prefillCode
+    }
     var pairing by remember { mutableStateOf(false) }
     var infoText by remember { mutableStateOf("") }
 
