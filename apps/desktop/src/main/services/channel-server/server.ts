@@ -1,6 +1,7 @@
 import { randomBytes, randomInt } from 'node:crypto'
 import { createReadStream, promises as fs } from 'node:fs'
 import { hostname } from 'node:os'
+import { lanHosts } from './pairing'
 import { basename, extname, isAbsolute } from 'node:path'
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { app } from 'electron'
@@ -17,7 +18,7 @@ import { deviceIdForToken, invalidateTokenCache } from './auth'
 import { noteDeviceSeen, noteDeviceStream } from './activity'
 import { addDevice, getGeneralServerConfig, sanitizeDeviceName, type GeneralServerConfig } from './config'
 import { consumePairCodeIfMatch, notePairFailure, pairAttemptAllowed } from './pairing'
-import { openSessionStream, openTurnStream } from './sse'
+import { canAdmit, openSessionStream, openTurnStream } from './sse'
 
 /**
  * 入站 HTTP 服务器（node:http，REST + SSE 同一监听，设计 §3.1/3.3）。
@@ -280,7 +281,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const saved = await setSecret(`general:${deviceId}:token`, token)
       if (!saved.ok)
         return json(res, 500, { error: '系统密钥存储不可用，无法安全保存设备凭据。' })
-      addDevice({ id: deviceId, name, pairedAt: Date.now() })
+      addDevice({ id: deviceId, name, pairedAt: Date.now(), enabled: true })
       invalidateTokenCache()
       return json(res, 200, {
         deviceId,
@@ -295,6 +296,21 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
     const deviceId = await deviceIdForToken(token)
     if (!deviceId) return json(res, 401, { error: '未配对或凭据无效。' })
+
+    // 纵深防御（审查 A3）：带 Origin 头的请求必须来自本机/本机 LAN 地址——
+    // 阻断受害者浏览器里恶意页面对本通道的跨站调用（CSRF/DNS rebinding）。
+    // 手机 App 不发送 Origin 头，不受影响。
+    const origin = req.headers.origin
+    if (origin) {
+      try {
+        const o = new URL(origin)
+        const allowedHosts = ['127.0.0.1', 'localhost', hostname(), ...lanHosts()]
+        if (!allowedHosts.includes(o.hostname))
+          return json(res, 403, { error: '跨源请求被拒绝。' })
+      } catch {
+        return json(res, 403, { error: 'Origin 不合法。' })
+      }
+    }
     noteDeviceSeen(deviceId)
 
     // GET /api/info：版本、主机名、平台、是否首次运行（首次运行 = 还没有任何会话）
@@ -311,18 +327,23 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // GET /api/sessions：会话列表（转发 chat-store；成员会话不进手机列表，与 hub /list 同口径）
     if (method === 'GET' && url.pathname === '/api/sessions') {
       const rt = getChatRuntime()
+      const all = listSessions()
+        .filter((s) => !s.parentId)
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .map((s) => ({
+          id: s.id,
+          title: s.title,
+          personaId: s.personaId,
+          updatedAt: s.updatedAt,
+          busy: rt?.isBusy(s.id) ?? false,
+          archived: s.archived === true
+        }))
+      // ?limit= 前缀截断(设备端「加载更早」分页的预留;默认全量)
+      const limitRaw = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : undefined
       return json(res, 200, {
-        sessions: listSessions()
-          .filter((s) => !s.parentId)
-          .sort((a, b) => b.updatedAt - a.updatedAt)
-          .map((s) => ({
-            id: s.id,
-            title: s.title,
-            personaId: s.personaId,
-            updatedAt: s.updatedAt,
-            busy: rt?.isBusy(s.id) ?? false,
-            archived: s.archived === true
-          }))
+        sessions: limit === undefined ? all : all.slice(0, limit),
+        total: all.length
       })
     }
 
@@ -363,9 +384,23 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         personaModel: persona?.model ?? null
       })
       if (!model) return json(res, 400, { error: '还没有可用的模型，请先在电脑端的设置里配置并选定模型。' })
+      // 会话忙 → 回退为「插入进行中的任务」(与 hub/IM 同口径,审查 A4):
+      // 设备在回合进行中再发消息,桌面原语就是插入当前这一轮。
+      if (rt.isBusy(sid)) {
+        const r = rt.insert({ sessionId: sid, text, model })
+        if (r.ok) return json(res, 200, { inserted: true })
+        return json(res, 409, { error: '上一轮还在进行中，请稍后再试。' })
+      }
       const attachments = Array.isArray(body?.attachments)
         ? body.attachments.filter((a): a is string => typeof a === 'string' && a.length > 0)
         : undefined
+      // 会话忙 → 回退为「插入进行中的任务」(与 hub/IM 同口径,审查 A4):
+      // 用户在回合进行中再发消息,桌面原语就是插入当前这一轮。
+      if (rt.isBusy(sid)) {
+        const r = rt.insert({ sessionId: sid, text, model })
+        if (r.ok) return json(res, 200, { inserted: true })
+        return json(res, 409, { error: '上一轮还在进行中。发送 /stop 可以停止它。' })
+      }
       try {
         const { turnId } = await rt.send({
           sessionId: sid,
@@ -442,9 +477,30 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       const h = req.headers['last-event-id']
       const raw = Array.isArray(h) ? h[0] : h
       const parsed = Number.parseInt(raw ?? '', 10)
+      if (!canAdmit(deviceId))
+        return json(res, 429, { error: '该设备连接数已达上限，请关闭其他会话的实时订阅。' })
       noteDeviceStream(deviceId, true)
       openSessionStream(res, sid, Number.isFinite(parsed) ? parsed : 0, deviceId)
       return
+    }
+
+    // GET /api/sessions/:id：单个会话元信息（设计 §3.3 表补齐;pendingInserts v1 恒空——
+    // 插入消息走 send 的 busy→insert 回退,不落独立队列）
+    const mOne = url.pathname.match(/^\/api\/sessions\/([^/]+)$/)
+    if (mOne && method === 'GET' && !url.search) {
+      const oneId = decodeSegment(mOne[1])
+      if (oneId === null) return json(res, 400, { error: '会话 id 编码不合法。' })
+      const one = getSession(oneId)
+      if (!one) return json(res, 404, { error: '会话不存在。' })
+      const busy = getChatRuntime()?.isBusy(oneId) ?? false
+      return json(res, 200, {
+        id: one.id,
+        title: one.title,
+        personaId: one.personaId,
+        busy,
+        archived: one.archived === true,
+        pendingInserts: []
+      })
     }
 
     // GET /api/sessions/:id/messages：历史回填（投影展示条目；?start=&limit= 向后翻页，默认返回最新一段）
@@ -502,6 +558,8 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // GET /api/turns/:turnId/events：SSE（长连接，此处不写 JSON 结尾）
     const m = url.pathname.match(/^\/api\/turns\/([A-Za-z0-9_-]+)\/events$/)
     if (m && method === 'GET') {
+      if (!canAdmit(deviceId))
+        return json(res, 429, { error: '该设备连接数已达上限，请关闭其他会话的实时订阅。' })
       const h = req.headers['last-event-id']
       const raw = Array.isArray(h) ? h[0] : h
       const parsed = Number.parseInt(raw ?? '', 10)

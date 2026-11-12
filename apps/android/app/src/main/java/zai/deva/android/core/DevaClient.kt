@@ -181,13 +181,16 @@ class DevaClient(
         }
     }
 
-    /** 发消息，返回本轮 turnId（服务端已解析默认模型，见 channel-server 的 send 路由）。 */
+    /**
+     * 发消息。返回本轮 turnId;会话忙时服务端回退为「插入进行中的任务」,
+     * 返回空串(turnId 缺失)——调用方按空串提示,不再发起新回合。
+     */
     suspend fun send(sessionId: String, text: String): ApiResult<String> {
         val body = JSONObject().put("text", text)
         return when (val r = request("POST", "/api/sessions/${enc(sessionId)}/send", body)) {
             is ApiResult.Ok -> {
                 val o = r.value ?: return ApiResult.Err("响应为空。")
-                ApiResult.Ok(o.getString("turnId"))
+                ApiResult.Ok(o.optString("turnId"))
             }
             is ApiResult.Err -> r
         }

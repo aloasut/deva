@@ -15,6 +15,9 @@ import { noteDeviceStream } from './activity'
  */
 
 const RING_CAPACITY = 2000
+/** 连接配额(审查 A2):全局 + 每设备,超限拒绝新建 SSE(429)。 */
+const MAX_CONNECTIONS = 64
+const MAX_PER_DEVICE = 4
 /** 单会话 ring 的字节预算：超出丢最老帧（大帧入环时降级为占位，直播连接已收过完整帧）。 */
 const RING_BYTES = 5 * 1024 * 1024
 /** 超过该字节的帧不入环原文，替换为占位（回放端按未知类型忽略，设计 §3.4）。 */
@@ -100,6 +103,14 @@ function push(f: Frame): void {
       if (oldest !== undefined) turnIndex.delete(oldest)
     }
   }
+}
+
+/** 连接配额判定:server.ts 在建流前调用,超限回 429。 */
+export function canAdmit(deviceId?: string): boolean {
+  if (connections.size >= MAX_CONNECTIONS) return false
+  if (!deviceId) return true
+  const mine = [...connections].filter((c) => c.deviceId === deviceId).length
+  return mine < MAX_PER_DEVICE
 }
 
 function writeFrame(conn: Connection, f: Frame): void {
@@ -201,6 +212,7 @@ export function openSessionStream(res: ServerResponse, sessionId: string, lastEv
     }
   }
 
+  res.on('error', () => res.destroy())
   res.on('close', () => {
     clearInterval(conn.heartbeat)
     connections.delete(conn)
@@ -246,6 +258,7 @@ export function openTurnStream(res: ServerResponse, turnId: string, lastEventId:
     }
   }
 
+  res.on('error', () => res.destroy())
   res.on('close', () => {
     clearInterval(conn.heartbeat)
     connections.delete(conn)

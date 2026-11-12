@@ -3,7 +3,7 @@ import QRCode from 'qrcode'
 import type { ChannelState } from '../remote/types'
 import { deleteSecretsByPrefix } from '../secrets'
 import { invalidateTokenCache } from './auth'
-import { getGeneralServerConfig, patchGeneralServer, removeDevice, renameDevice } from './config'
+import { getGeneralServerConfig, patchGeneralServer, removeDevice, renameDevice, setDeviceEnabled } from './config'
 import { cancelPairCode, issuePairCode, lanHost, lanHosts } from './pairing'
 import { startServer, stopServer } from './server'
 import { closeDeviceConnections, dropSession, startEventStream, stopEventStream } from './sse'
@@ -21,6 +21,8 @@ export interface GeneralDeviceView {
   id: string
   name: string
   pairedAt: number
+  /** 单设备启停（审查 F1/F8）：false 即该设备请求一律 401。 */
+  enabled: boolean
   /** 进程内活动态（activity.ts）：有存活的 SSE 连接 / 最近一次带鉴权请求时间。 */
   online: boolean
   lastSeenAt: number
@@ -61,6 +63,7 @@ export function getChannelServerState(): GeneralServerView {
     state,
     ...(stateError ? { error: stateError } : {}),
     devices: cfg.devices.map((d) => ({
+      enabled: d.enabled,
       id: d.id,
       name: d.name,
       pairedAt: d.pairedAt,
@@ -142,6 +145,13 @@ export function registerChannelServerIpc(getWindow: () => BrowserWindow | null =
 
   // 设备改名：净化 + 全局唯一（config.renameDevice），两端面板实时可见（5s 轮询）
   ipcMain.handle('general:rename-device', (_e, id: string, rawName: string) => renameDevice(id, rawName))
+
+  // 单设备启停（审查 F1/F8）：false 即该设备请求一律 401
+  ipcMain.handle('general:set-device-enabled', (_e, id: string, enabled: boolean): { ok: true } => {
+    setDeviceEnabled(id, enabled)
+    if (!enabled) closeDeviceConnections(id)
+    return { ok: true }
+  })
 
   // 通道启停开关（设计 §3.1）：enabled=false 即停止监听、不占端口
   ipcMain.handle('general:set-enabled', (_e, enabled: boolean): { ok: true } => {

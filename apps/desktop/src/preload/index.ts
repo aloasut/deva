@@ -1526,6 +1526,9 @@ const api = {
     /** 设备改名：净化 + 全局唯一（NFKC 不分大小写）。 */
     renameDevice: (id: string, name: string): Promise<{ ok: true } | { ok: false; error: string }> =>
       ipcRenderer.invoke('general:rename-device', id, name),
+    /** 单设备启停（审查 F1/F8）：false 即该设备请求一律 401。 */
+    setDeviceEnabled: (id: string, enabled: boolean): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('general:set-device-enabled', id, enabled),
     /** 通道状态推送（启停/配对/设备增删时触发）。返回退订函数。 */
     onChanged: (cb: (state: GeneralServerView) => void): (() => void) => {
       const listener = (_e: unknown, s: GeneralServerView): void => cb(s)

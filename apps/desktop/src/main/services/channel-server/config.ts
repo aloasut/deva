@@ -13,6 +13,8 @@ export interface GeneralDevice {
   id: string
   name: string
   pairedAt: number
+  /** 单设备启停（审查 F1/F8）：false 即鉴权短路，该设备请求一律 401。默认 true。 */
+  enabled: boolean
 }
 
 export interface GeneralServerConfig {
@@ -66,7 +68,8 @@ function normalize(raw: unknown): GeneralServerConfig {
           devices.push({
             id: c.id,
             name: typeof c.name === 'string' ? c.name : '',
-            pairedAt: typeof c.pairedAt === 'number' ? c.pairedAt : 0
+            pairedAt: typeof c.pairedAt === 'number' ? c.pairedAt : 0,
+            enabled: c.enabled !== false
           })
       }
     return {
@@ -100,6 +103,13 @@ export function patchGeneralServer(patch: Partial<Omit<GeneralServerConfig, 'dev
 export function addDevice(d: GeneralDevice): void {
   const cfg = getGeneralServerConfig()
   write({ ...cfg, devices: [...cfg.devices.filter((x) => x.id !== d.id), d] })
+}
+
+/** 单设备启停（审查 F1/F8）：false 即鉴权短路，该设备请求一律 401。 */
+export function setDeviceEnabled(id: string, enabled: boolean): void {
+  const cfg = getGeneralServerConfig()
+  if (!cfg.devices.some((d) => d.id === id)) return
+  write({ ...cfg, devices: cfg.devices.map((d) => (d.id === id ? { ...d, enabled } : d)) })
 }
 
 export function removeDevice(id: string): void {

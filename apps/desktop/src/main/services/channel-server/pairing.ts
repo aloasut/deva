@@ -30,15 +30,6 @@ export function cancelPairCode(): void {
   current = null
 }
 
-export function verifyPairCode(code: string): boolean {
-  if (!current) return false
-  if (current.expiresAt < Date.now()) {
-    current = null
-    return false
-  }
-  return code === current.code
-}
-
 /**
  * 配对码一次性原子消费：校验与作废在同一步同步完成（JS 单线程，无 await 间隙），
  * 并发同码配对有且只有一个成功——堵死「校验 → 异步落密钥 → 作废」窗口期的双重接入竞态。

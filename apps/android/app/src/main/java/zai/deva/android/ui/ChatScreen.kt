@@ -98,14 +98,24 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
         if (loadError != null) return@LaunchedEffect
         AppGraph.sessions.watchSession(sessionId) {
             AppGraph.scope.launch {
-                AppGraph.sessions.open(AppGraph.client() ?: return@launch, sessionId, force = true)
+                val c = AppGraph.client() ?: return@launch
+                // replay_reset 后整体重填:失败保留现有时间线并置横幅,不闪空白(审查 A1)
+                when (val r = AppGraph.sessions.repopulate(c, sessionId)) {
+                    is ApiResult.Err -> loadError = r.message
+                    is ApiResult.Ok -> loadError = null
+                }
             }
         }
     }
 
-    // 新内容到达时滚到底
+    // 新内容到达时:仅当用户停留在近底部才自动滚动(避免阅读历史被拽回,审查 A6)
     LaunchedEffect(items.size) {
-        if (items.isNotEmpty()) listState.animateScrollToItem(items.size - 1)
+        if (items.isNotEmpty()) {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            if (lastVisible >= listState.layoutInfo.totalItemsCount - 2) {
+                listState.animateScrollToItem(items.size - 1)
+            }
+        }
     }
 
     // 离开会话：停流（builder 与 lastEventId 保留，回来可 Last-Event-ID 续传）
@@ -227,13 +237,18 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
                             scope.launch {
                                 when (val r = c.send(sessionId, text)) {
                                     is ApiResult.Ok -> {
-                                        AppGraph.sessions.sendStarted(sessionId, r.value, text) {
-                                            AppGraph.scope.launch {
-                                                AppGraph.sessions.open(
-                                                    AppGraph.client() ?: return@launch,
-                                                    sessionId,
-                                                    force = true
-                                                )
+                                        if (r.value.isEmpty()) {
+                                            // 忙时回退为「插入进行中的任务」(IM 同口径):无新回合
+                                            snackbar.showSnackbar("已插入进行中的任务，当前步骤结束后送达。")
+                                        } else {
+                                            AppGraph.sessions.sendStarted(sessionId, r.value, text) {
+                                                AppGraph.scope.launch {
+                                                    AppGraph.sessions.open(
+                                                        AppGraph.client() ?: return@launch,
+                                                        sessionId,
+                                                        force = true
+                                                    )
+                                                }
                                             }
                                         }
                                     }

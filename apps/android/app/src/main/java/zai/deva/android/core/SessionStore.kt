@@ -83,6 +83,15 @@ class SessionStore(
     suspend fun open(client: DevaClient, sessionId: String, force: Boolean = false): ApiResult<Unit> {
         val st = state(sessionId)
         if (!force && st.flow.value.isNotEmpty()) return ApiResult.Ok(Unit)
+        return repopulate(client, sessionId)
+    }
+
+    /**
+     * 整体重填(replay_reset 后 / 加载更早基础):先拉取,成功才重种——
+     * 失败保留现有时间线不闪空白(审查 A1)。同时刷新 backfilledStart/hasOlder。
+     */
+    suspend fun repopulate(client: DevaClient, sessionId: String): ApiResult<Unit> {
+        val st = state(sessionId)
         return when (val r = client.messages(sessionId)) {
             is ApiResult.Ok -> {
                 st.builder.seedBackfill(r.value.messages)
@@ -141,9 +150,7 @@ class SessionStore(
             sessionId,
             onFrame = { f -> onSessionFrame(sessionId, f) },
             onReplayReset = {
-                // 缓冲已断：清空后整体回填（Last-Event-ID 已清零，之后只跟直播）
-                st.builder.seedBackfill(emptyList())
-                st.flow.value = st.builder.snapshot
+                // 缓冲已断:不清屏——回调方拉取成功才重种,失败保留现状(审查 A1)
                 onReplayReset()
             },
             onState = { s -> _streamState.value = s }

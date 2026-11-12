@@ -19,6 +19,7 @@ export async function deviceIdForToken(token: string): Promise<string | null> {
   if (!cache) {
     cache = new Map()
     for (const d of getGeneralServerConfig().devices) {
+      if (!d.enabled) continue // 单设备启停(审查 F1/F8):停用设备直接不算已知凭据
       const t = await getSecret(`general:${d.id}:token`)
       if (t) cache.set(t, d.id)
     }
