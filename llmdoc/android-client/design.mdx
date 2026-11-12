@@ -87,8 +87,9 @@ Deva 主进程目前**没有任何入站端点**（已核实：`apps/desktop/src
 | POST | `/api/sessions/:id/answer` | 交互作答（`key`, `kind: ask/plan/mount`, `payload`） |
 | POST | `/api/turns/:turnId/abort` | 停止回合 |
 | GET | `/api/turns/:turnId/events?lastEventId=N` | SSE 事件流（支持 `Last-Event-ID` 续传） |
-| GET | `/api/sessions/:id/messages` | 历史消息（分页，供进入会话时回填） |
-| GET | `/api/files?path=...` | 下载交付文件 / 预览图片 |
+| GET | `/api/sessions/:id/messages` | 历史消息（分页，供进入会话时回填；含未决卡与交付文件投影） |
+| GET | `/api/sessions/:id/deliveries?toolUseId=...` | 一次 present_files 交付的文件清单（直播回合收到 tool_result 后补拉） |
+| GET | `/api/files?path=...&session=...` | 下载交付文件 / 预览图片（path 必须在该会话边车 delivered 白名单内） |
 
 `send` 内部转调 `ChatRuntime.send`，`answer` 转调 `answerAsk` / `decidePlan` / `answerMount`，`abort` 转调 `abort`。**入站通道不得自己拼接提示词、不得绕过 `tools-policy` 权限闸门**——它与桌面 IPC 走同一入口，保证落盘、检查点、安全闸门一致。
 
