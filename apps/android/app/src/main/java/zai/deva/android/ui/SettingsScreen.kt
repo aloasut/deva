@@ -1,6 +1,10 @@
 package zai.deva.android.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -21,6 +25,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -30,6 +35,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -42,6 +48,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -156,6 +163,63 @@ fun SettingsScreen(onBack: () -> Unit) {
                     )
                 }
             }
+
+            // P4:保活与重连（设计 §4/§5-6——保活默认关,重连默认开）
+            item {
+                val keepAlive by AppGraph.prefs.keepAlive.collectAsState()
+                val reconnect by AppGraph.prefs.reconnect.collectAsState()
+                val ctx = LocalContext.current
+                val notifPerm = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { } // 拒了也照跑,只是通知不可见
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("后台保活", style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    "App 退到后台时用前台服务保持事件流（常驻通知显示连接状态，默认关）",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = keepAlive,
+                                onCheckedChange = { on ->
+                                    AppGraph.prefs.setKeepAlive(on)
+                                    if (on) {
+                                        if (Build.VERSION.SDK_INT >= 33 &&
+                                            ctx.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
+                                            PackageManager.PERMISSION_GRANTED
+                                        ) notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                        // 前台时观测者会停服务；这里兜底交给前后台切换时拉起
+                                    } else {
+                                        AppGraph.stopKeepAlive()
+                                    }
+                                }
+                            )
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("断线自动重连", style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    "断开后按 1s→30s 指数退避自动恢复事件流；关掉则断线即停，重进会话恢复",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = reconnect,
+                                onCheckedChange = { AppGraph.prefs.setReconnect(it) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 关于
+            item { AboutCard() }
         }
     }
 
@@ -183,6 +247,26 @@ fun SettingsScreen(onBack: () -> Unit) {
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } }
         )
+    }
+}
+
+@Composable
+private fun AboutCard() {
+    val ctx = LocalContext.current
+    val version = remember {
+        runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "?"
+    }
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("关于", style = MaterialTheme.typography.titleMedium)
+            Text("Deva 安卓客户端 v$version", style = MaterialTheme.typography.bodyMedium)
+            Text(
+                "局域网直连电脑端 Deva，同一后端、同一会话。配对与下载边界见桌面端设置 → 远程设备。" +
+                    "在家不可用时可用 Tailscale / WireGuard 等组网工具接入。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 

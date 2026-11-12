@@ -45,5 +45,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

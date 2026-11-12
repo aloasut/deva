@@ -1,7 +1,11 @@
 package zai.deva.android.core
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
@@ -9,7 +13,16 @@ import org.json.JSONObject
  * 列表按 updatedAt 倒序（服务端已排）；每会话一份 TimelineBuilder + StateFlow；
  * 离开会话只停流不丢状态，重进用 Last-Event-ID 续传，replay_reset 触发整体回填。
  */
-class SessionStore(private val stream: EventStream) {
+class SessionStore(
+    private val stream: EventStream,
+    /** 补拉交付清单用的 client（AppGraph 注入，随当前服务器解析）；null = 不拉，卡停在加载态。 */
+    private val clientProvider: () -> DevaClient? = { null }
+) {
+
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** 已补拉过清单的交付卡（同一 toolUseId 只拉一次；SSE 线程判重，并发安全）。 */
+    private val fetched: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap())
 
     private data class SessionState(
         val builder: TimelineBuilder,
@@ -90,6 +103,13 @@ class SessionStore(private val stream: EventStream) {
                 val own = f.data.optString("turnId") == turnId
                 st.builder.onChatEvent(f.data, isOwnTurn = own)
                 st.flow.value = st.builder.snapshot
+                // present_files 成功：清单补拉（toolUseId = 调用 id）；失败把卡标成 failed 保留重试入口
+                if (f.data.optString("type") == "tool_result" &&
+                    f.data.optString("name") == "present_files" &&
+                    !f.data.optBoolean("isError")
+                ) {
+                    fetchDeliveries(sessionId, f.data.optString("id"))
+                }
                 if (f.data.optString("type") == "done" && own) {
                     st.active.value = null
                     stream.stop()
@@ -103,6 +123,30 @@ class SessionStore(private val stream: EventStream) {
             },
             onState = { s -> _streamState.value = s }
         )
+    }
+
+    /** /deliveries 补拉（IO 协程；结果回填走 builder 的同步方法，Err 把卡标成 failed 保留提示）。 */
+    private fun fetchDeliveries(sessionId: String, toolUseId: String, force: Boolean = false) {
+        if (toolUseId.isEmpty() || (!force && !fetched.add(toolUseId))) return
+        ioScope.launch {
+            val client = clientProvider() ?: return@launch
+            when (val r = client.deliveries(sessionId, toolUseId)) {
+                is ApiResult.Ok -> attach(sessionId, toolUseId, r.value, failed = false)
+                is ApiResult.Err -> attach(sessionId, toolUseId, emptyList(), failed = true)
+            }
+        }
+    }
+
+    /** 失败交付卡的重试（UI 点「重试」调；绕过判重）。 */
+    fun retryDeliveries(sessionId: String, toolUseId: String) {
+        fetched.remove(toolUseId)
+        fetchDeliveries(sessionId, toolUseId)
+    }
+
+    private fun attach(sessionId: String, toolUseId: String, files: List<DeliverableFile>, failed: Boolean) {
+        val st = state(sessionId)
+        st.builder.attachFiles(toolUseId, files, failed)
+        st.flow.value = st.builder.snapshot
     }
 
     /** 停止当前订阅（离开会话时调；builder 与 lastEventId 保留，重进可续传）。 */

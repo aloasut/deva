@@ -1,5 +1,7 @@
 import { randomBytes, randomInt } from 'node:crypto'
+import { createReadStream, promises as fs } from 'node:fs'
 import { hostname } from 'node:os'
+import { basename, extname, isAbsolute } from 'node:path'
 import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { app } from 'electron'
 import { getChatRuntime, parseAskQuestions } from '../chat'
@@ -82,6 +84,59 @@ interface BackfillItem {
     key: string
     plan: string
   }
+  /**
+   * 交付文件（present_files，设计 §5-5）：路径来自会话边车 delivered（与桌面交付卡同源，
+   * 绝不接受请求指定任意路径）。有此字段时本条目的 tools 不再含 present_files——手机端整行画成交付卡。
+   */
+  files?: DeliverableFileJson[]
+}
+
+/** 交付文件条目（回填与 /deliveries 同形）。size=null 表示文件已被移走或删除。 */
+interface DeliverableFileJson {
+  path: string
+  name: string
+  size: number | null
+  image: boolean
+}
+
+/** 手机端能内联预览的图片扩展名（与桌面 deliverables 的图片集合对齐；svg 手机端不预览）。 */
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff', '.avif', '.heic'])
+
+/**
+ * present_files 一次交付的文件清单（绝对路径、已解析）：优先会话边车 delivered，
+ * 缺失时回落历史里该调用的绝对路径参数（早期版本把解析后的路径直接写进了参数）。
+ * 与 deliverables.ts 的 deliveredPaths 同源同口径，不在通道里改写业务规则。
+ */
+function deliveredPaths(session: StoredSession, toolUseId: string): string[] {
+  const recorded = session.delivered?.[toolUseId]
+  if (recorded?.length) return recorded
+  for (const m of session.messages) {
+    if (m.role !== 'assistant' || typeof m.content === 'string') continue
+    for (const p of m.content) {
+      if (p.type !== 'tool_use' || p.id !== toolUseId) continue
+      if (p.name !== 'present_files') return []
+      const paths = (p.input as { paths?: unknown } | null)?.paths
+      return Array.isArray(paths)
+        ? paths.filter((x): x is string => typeof x === 'string' && isAbsolute(x))
+        : []
+    }
+  }
+  return []
+}
+
+async function deliveredFiles(session: StoredSession, toolUseId: string): Promise<DeliverableFileJson[]> {
+  const paths = deliveredPaths(session, toolUseId)
+  return Promise.all(
+    paths.map(async (p) => {
+      const st = await fs.stat(p).catch(() => null)
+      return {
+        path: p,
+        name: basename(p),
+        size: st?.isFile() ? st.size : null,
+        image: IMAGE_EXTS.has(extname(p).toLowerCase())
+      }
+    })
+  )
 }
 
 /**
@@ -89,12 +144,14 @@ interface BackfillItem {
  * 正文取 text 块；assistant 的 tool_use 折叠成工具名；user 消息里的 tool_result（provider 约定）
  * 不是人话，跳过；图片/文档只报个数（v1 不回填正文附件）。i 为投影后序号，供分页定位。
  * 未决交互卡判定只读边车终态（asks/plans），不在通道里复制「循环暂停」语义。
+ * 交付文件（present_files）读边车 delivered：有交付时该调用整行升格为 files 卡。
  */
-function projectMessages(messages: Message[], session: StoredSession): BackfillItem[] {
+async function projectMessages(messages: Message[], session: StoredSession): Promise<BackfillItem[]> {
   const out: BackfillItem[] = []
   for (const m of messages) {
     const texts: string[] = []
     const tools: string[] = []
+    const files: DeliverableFileJson[] = []
     let attachments = 0
     let card: BackfillItem['card']
     if (typeof m.content === 'string') {
@@ -104,6 +161,13 @@ function projectMessages(messages: Message[], session: StoredSession): BackfillI
         if (p.type === 'text') {
           if (p.text.trim()) texts.push(p.text)
         } else if (p.type === 'tool_use') {
+          if (p.name === 'present_files') {
+            const f = await deliveredFiles(session, p.id)
+            if (f.length) {
+              files.push(...f)
+              continue // 有交付：tools 不再带 present_files，手机端整行画交付卡
+            }
+          }
           tools.push(p.name)
           if (m.role === 'assistant' && !card) {
             // 一对话同时最多一张未决卡（交互工具会暂停循环）；终态在边车的不再当未决回填
@@ -123,17 +187,41 @@ function projectMessages(messages: Message[], session: StoredSession): BackfillI
         // tool_result：工具输出，桌面端折叠展示，v1 手机端不回填
       }
     }
-    if (texts.length || tools.length || attachments || card)
+    if (texts.length || tools.length || attachments || card || files.length)
       out.push({
         i: out.length,
         role: m.role,
         ...(texts.length ? { text: texts.join('\n\n') } : {}),
         ...(tools.length ? { tools } : {}),
         ...(attachments ? { attachments } : {}),
-        ...(card ? { card } : {})
+        ...(card ? { card } : {}),
+        ...(files.length ? { files } : {})
       })
   }
   return out
+}
+
+/** 下载响应的 Content-Type（够用的最小集；未知一律 octet-stream）。 */
+const CONTENT_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8',
+  '.log': 'text/plain; charset=utf-8',
+  '.csv': 'text/plain; charset=utf-8',
+  '.json': 'application/json',
+  '.html': 'text/html; charset=utf-8',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.zip': 'application/zip'
 }
 
 async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -305,7 +393,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (mMsg && method === 'GET') {
       const session = getSession(decodeURIComponent(mMsg[1]))
       if (!session) return json(res, 404, { error: '会话不存在。' })
-      const items = projectMessages(session.messages, session)
+      const items = await projectMessages(session.messages, session)
       const total = items.length
       const qLimit = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
       const limit = Number.isFinite(qLimit) ? Math.min(Math.max(qLimit, 1), 2000) : 400
@@ -314,6 +402,38 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
         ? Math.min(Math.max(qStart, 0), Math.max(total - 1, 0))
         : Math.max(total - limit, 0)
       return json(res, 200, { sessionId: session.id, total, start, messages: items.slice(start, start + limit) })
+    }
+
+    // GET /api/sessions/:id/deliveries?toolUseId=…：直播回合的交付文件（手机收到 present_files
+    // 的 tool_result 后拉这口补清单）。回填口 /messages 的 files 字段与其同形。
+    const mDel = url.pathname.match(/^\/api\/sessions\/([^/]+)\/deliveries$/)
+    if (mDel && method === 'GET') {
+      const session = getSession(decodeURIComponent(mDel[1]))
+      if (!session) return json(res, 404, { error: '会话不存在。' })
+      const toolUseId = url.searchParams.get('toolUseId') ?? ''
+      if (!toolUseId) return json(res, 400, { error: '缺少 toolUseId。' })
+      return json(res, 200, { files: await deliveredFiles(session, toolUseId) })
+    }
+
+    // GET /api/files?path=…&session=…：下载交付文件 / 取图片预览（设计 §3.3）。
+    // 路径必须出现在该会话边车 delivered 里——通道不提供任意路径读取（与桌面 deliverables IPC 同一边界）。
+    if (url.pathname === '/api/files' && method === 'GET') {
+      const sid = url.searchParams.get('session') ?? ''
+      const p = url.searchParams.get('path') ?? ''
+      const session = sid ? getSession(decodeURIComponent(sid)) : undefined
+      if (!session) return json(res, 404, { error: '会话不存在。' })
+      if (!p || !Object.values(session.delivered ?? {}).some((arr) => arr.includes(p)))
+        return json(res, 403, { error: '只允许下载该对话交付过的文件。' })
+      const st = await fs.stat(p).catch(() => null)
+      if (!st?.isFile()) return json(res, 404, { error: '文件不存在或已被移动。' })
+      res.writeHead(200, {
+        'content-type': CONTENT_TYPES[extname(p).toLowerCase()] ?? 'application/octet-stream',
+        'content-length': st.size
+      })
+      const stream = createReadStream(p)
+      stream.on('error', () => res.destroy())
+      stream.pipe(res)
+      return
     }
 
     // GET /api/turns/:turnId/events：SSE（长连接，此处不写 JSON 结尾）

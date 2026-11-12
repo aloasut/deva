@@ -22,6 +22,8 @@ data class SseFrame(val id: Long, val event: String, val data: JSONObject)
 class EventStream(
     private val baseUrlProvider: () -> String?,
     private val tokenProvider: () -> String?,
+    /** 断线自动重连闸门（设置页开关，默认开）；关掉时断线即停，重进会话再手动恢复。 */
+    private val reconnectEnabled: () -> Boolean = { true },
     /** 独立 client：SSE 长连接不设读超时。 */
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -101,6 +103,10 @@ class EventStream(
                     abortHandle = null
                 }
                 if (!running.get()) break
+                if (!reconnectEnabled()) {
+                    onState("stopped")
+                    break
+                }
                 onState("reconnecting")
                 try {
                     Thread.sleep(backoffMs(attempt))

@@ -9,6 +9,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.io.OutputStream
 import java.util.concurrent.TimeUnit
 
 /** 统一返回：Err.message 已翻成人话文案，UI 可直接展示。 */
@@ -26,6 +27,9 @@ data class SessionMeta(
     val archived: Boolean
 )
 
+/** 交付文件条目（present_files；路径来自桌面会话边车 delivered，与桌面交付卡同源）。 */
+data class DeliverableFile(val path: String, val name: String, val size: Long?, val isImage: Boolean)
+
 /** 回填条目里的未决交互卡（服务端只回填 ask / plan 两种；mount 不入历史）。 */
 data class BackfillCard(val kind: String, val key: String, val questions: List<AskQuestion>, val plan: String)
 
@@ -36,7 +40,8 @@ data class BackfillMsg(
     val text: String?,
     val tools: List<String>,
     val attachments: Int,
-    val card: BackfillCard? = null
+    val card: BackfillCard? = null,
+    val files: List<DeliverableFile> = emptyList()
 )
 
 data class Backfill(val total: Int, val start: Int, val messages: List<BackfillMsg>)
@@ -141,13 +146,25 @@ class DevaClient(
                             plan = c.optString("plan")
                         )
                     }
+                    val farr = m.optJSONArray("files")
+                    val files = (0 until (farr?.length() ?: 0)).mapNotNull { j ->
+                        farr?.optJSONObject(j)?.let { f ->
+                            DeliverableFile(
+                                path = f.optString("path"),
+                                name = f.optString("name"),
+                                size = if (f.isNull("size")) null else f.optLong("size"),
+                                isImage = f.optBoolean("image")
+                            )
+                        }
+                    }
                     BackfillMsg(
                         i = m.optInt("i"),
                         role = m.optString("role"),
                         text = m.optString("text").takeIf { it.isNotEmpty() },
                         tools = tools,
                         attachments = m.optInt("attachments", 0),
-                        card = card
+                        card = card,
+                        files = files
                     )
                 }
                 ApiResult.Ok(Backfill(total = o.optInt("total"), start = o.optInt("start"), messages = list))
@@ -184,6 +201,74 @@ class DevaClient(
         return when (val r = request("POST", "/api/sessions/${enc(sessionId)}/answer", body)) {
             is ApiResult.Ok -> ApiResult.Ok(Unit)
             is ApiResult.Err -> r
+        }
+    }
+
+    /** 一次 present_files 交付的文件清单（直播回合收到 tool_result 后补拉；回填口已内嵌 files）。 */
+    suspend fun deliveries(sessionId: String, toolUseId: String): ApiResult<List<DeliverableFile>> =
+        when (val r = request("GET", "/api/sessions/${enc(sessionId)}/deliveries?toolUseId=${enc(toolUseId)}")) {
+            is ApiResult.Ok -> {
+                val o = r.value ?: return ApiResult.Err("响应为空。")
+                val arr = o.optJSONArray("files") ?: JSONArray()
+                ApiResult.Ok(
+                    (0 until arr.length()).mapNotNull { i ->
+                        val f = arr.optJSONObject(i) ?: return@mapNotNull null
+                        DeliverableFile(
+                            path = f.optString("path"),
+                            name = f.optString("name"),
+                            size = if (f.isNull("size")) null else f.optLong("size"),
+                            isImage = f.optBoolean("image")
+                        )
+                    }
+                )
+            }
+            is ApiResult.Err -> r
+        }
+
+    /**
+     * 下载交付文件到 sink（流式，不整载进内存；设计 §5-5 落到 Downloads/Deva/）。
+     * 服务端只放行该会话边车 delivered 里的路径（403 = 不在白名单）。
+     */
+    suspend fun download(path: String, sessionId: String, sink: OutputStream): ApiResult<Unit> =
+        fetchFile(path, sessionId) { resp ->
+            resp.body?.byteStream()?.use { src -> src.copyTo(sink) }
+        }
+
+    /** 取文件字节（图片内联预览用；cap 之外直接报错，不无界读）。 */
+    suspend fun fileBytes(path: String, sessionId: String, cap: Long = 25L * 1024 * 1024): ApiResult<ByteArray> =
+        fetchFile(path, sessionId) { resp ->
+            val body = resp.body ?: return@fetchFile ByteArray(0)
+            if ((body.contentLength().takeIf { it > 0 } ?: Long.MAX_VALUE) > cap)
+                throw IOException("文件超过预览上限")
+            body.bytes()
+        }
+
+    private suspend fun <T> fetchFile(
+        path: String,
+        sessionId: String,
+        consume: (okhttp3.Response) -> T
+    ): ApiResult<T> = withContext(Dispatchers.IO) {
+        val b = Request.Builder()
+            .url(baseUrl + "/api/files?path=" + enc(path) + "&session=" + enc(sessionId))
+            .get()
+        tokenProvider()?.takeIf { it.isNotEmpty() }?.let { b.header("Authorization", "Bearer $it") }
+        try {
+            http.newCall(b.build()).execute().use { resp ->
+                when {
+                    resp.code == 401 -> ApiResult.Err("未配对或凭据无效，请重新配对。")
+                    resp.code == 403 -> ApiResult.Err("只允许下载该对话交付过的文件。")
+                    resp.code == 404 -> ApiResult.Err("文件不存在或已被移动。")
+                    !resp.isSuccessful -> ApiResult.Err("下载失败（HTTP ${resp.code}）。")
+                    else ->
+                        try {
+                            ApiResult.Ok(consume(resp))
+                        } catch (e: IOException) {
+                            ApiResult.Err("下载中断：${e.message ?: "网络错误"}")
+                        }
+                }
+            }
+        } catch (e: IOException) {
+            ApiResult.Err("连不上服务器：${e.message ?: "网络错误"}")
         }
     }
 

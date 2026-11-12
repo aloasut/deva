@@ -139,7 +139,7 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                items(items) { item -> TimelineRow(item, onAnswer) }
+                items(items) { item -> TimelineRow(item, onAnswer, sessionId, snackbar) }
             }
 
             // Waiting 态（有未决卡）：输入框禁用并提示，防止用户打字却被静默丢弃（设计 §4 状态机）
@@ -209,7 +209,12 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit) {
 }
 
 @Composable
-private fun TimelineRow(item: TimelineItem, onAnswer: (String, String, JSONObject) -> Unit) {
+private fun TimelineRow(
+    item: TimelineItem,
+    onAnswer: (String, String, JSONObject) -> Unit,
+    sessionId: String,
+    snackbar: SnackbarHostState
+) {
     when (item) {
         is TimelineItem.Text -> Bubble(item.text, item.fromUser)
         is TimelineItem.Thinking -> Text(
@@ -231,8 +236,7 @@ private fun TimelineRow(item: TimelineItem, onAnswer: (String, String, JSONObjec
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
         )
-        // 交付物：P4 接入
-        is TimelineItem.Deliverable -> Unit
+        is TimelineItem.Deliverable -> DeliverableRow(item, sessionId, snackbar)
     }
 }
 

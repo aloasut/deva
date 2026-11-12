@@ -20,7 +20,7 @@ sealed interface CardPayload {
  * 事件类型全集见设计 §3.4（与桌面端 ChatStreamEvent 同形）；未知类型忽略并计数，不抛异常。
  * P2 覆盖：text_delta / thinking_delta / tool_call / tool_result / turn_start / error / done。
  * P3 覆盖：ask_user / plan_review / mount_request 三类卡 + interaction_resolved 收起。
- * 卡片与交付物节点为 P4 预留形状（Deliverable）。
+ * P4 覆盖：present_files 交付卡（tool_result 升格 + /deliveries 清单回填）。
  */
 sealed interface TimelineItem {
     data class Text(val text: String, val fromUser: Boolean) : TimelineItem
@@ -29,7 +29,12 @@ sealed interface TimelineItem {
     data class Tool(val id: String, val name: String, val summary: String?) : TimelineItem
     /** resolved = null 未决（可作答）；否则为收起后的一句话终态（已作答 / 已批准 / 已取消…）。 */
     data class Card(val payload: CardPayload, val resolved: String?) : TimelineItem
-    data class Deliverable(val name: String, val size: Long) : TimelineItem
+    /**
+     * 交付文件卡（present_files，设计 §5-5）。files 为空且未失败 = 清单加载中；
+     * failed = 清单没拉到（保留可重试的空卡）。
+     */
+    data class Deliverable(val toolUseId: String, val files: List<DeliverableFile>, val failed: Boolean = false) :
+        TimelineItem
     data class Error(val message: String) : TimelineItem
 }
 
@@ -60,6 +65,8 @@ class TimelineBuilder {
             } else {
                 m.text?.let { items.add(TimelineItem.Text(it, fromUser = false)) }
                 for (t in m.tools) items.add(TimelineItem.Tool(id = "hist:$t", name = t, summary = "已完成"))
+                // 交付卡随历史还原（服务端已把 present_files 从 tools 里剔除，此处独立成卡）
+                if (m.files.isNotEmpty()) items.add(TimelineItem.Deliverable("hist:${m.i}", m.files))
                 if (m.attachments > 0) {
                     items.add(TimelineItem.Text("（含 ${m.attachments} 个附件）", fromUser = m.role == "user"))
                 }
@@ -91,10 +98,15 @@ class TimelineBuilder {
                     summary = null
                 )
             )
-            "tool_result" -> finishTool(
-                data.optString("id"),
-                (if (data.optBoolean("isError")) "✗ " else "") + data.optString("summary")
-            )
+            "tool_result" -> {
+                val id = data.optString("id")
+                // 交付完成：present_files 的成功结果整行升格为交付卡（清单随后由 /deliveries 补齐）
+                if (data.optString("name") == "present_files" && !data.optBoolean("isError")) {
+                    promoteToDeliverable(id)
+                } else {
+                    finishTool(id, (if (data.optBoolean("isError")) "✗ " else "") + data.optString("summary"))
+                }
+            }
             "turn_start" -> {
                 if (isOwnTurn) return // 自己发起的：发送时已乐观上屏
                 val user = data.optJSONObject("user") ?: return
@@ -169,6 +181,23 @@ class TimelineBuilder {
             items[items.size - 1] = last.copy(text = last.text + text)
         } else {
             items.add(TimelineItem.Thinking(text))
+        }
+    }
+
+    /** present_files 成功：把同 id 的「正在…」工具行就地换成加载态交付卡。 */
+    private fun promoteToDeliverable(toolUseId: String) {
+        val idx = items.indexOfLast { it is TimelineItem.Tool && it.id == toolUseId }
+        if (idx >= 0) items[idx] = TimelineItem.Deliverable(toolUseId, files = emptyList())
+        else items.add(TimelineItem.Deliverable(toolUseId, files = emptyList()))
+    }
+
+    /** 清单补齐 / 失败标记（SessionStore 拉完 /deliveries 后回填）。 */
+    @Synchronized
+    fun attachFiles(toolUseId: String, files: List<DeliverableFile>, failed: Boolean = false) {
+        val idx = items.indexOfLast { it is TimelineItem.Deliverable && it.toolUseId == toolUseId }
+        if (idx >= 0) {
+            val d = items[idx] as TimelineItem.Deliverable
+            items[idx] = d.copy(files = files, failed = failed)
         }
     }
 
