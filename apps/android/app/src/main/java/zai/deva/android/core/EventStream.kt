@@ -121,7 +121,12 @@ class EventStream(
                                     runCatching { call.cancel() }
                                     return@thread
                                 }
-                                Thread.sleep(5_000)
+                                // stop() 的清理中断会打进这个 sleep：吞掉退出，不留 uncaught 噪音日志
+                                try {
+                                    Thread.sleep(5_000)
+                                } catch (_: InterruptedException) {
+                                    return@thread
+                                }
                             }
                         }
                         var evName = ""

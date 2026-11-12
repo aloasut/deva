@@ -190,9 +190,11 @@ class DevaClient(
     /**
      * 发消息。返回本轮 turnId;会话忙时服务端回退为「插入进行中的任务」,
      * 返回空串(turnId 缺失)——调用方按空串提示,不再发起新回合。
+     * attachments 为 /api/attachments 返回的服务端路径(忙时插入只带正文,附件被丢弃——与桌面/IM 同语义)。
      */
-    suspend fun send(sessionId: String, text: String): ApiResult<String> {
+    suspend fun send(sessionId: String, text: String, attachments: List<String> = emptyList()): ApiResult<String> {
         val body = JSONObject().put("text", text)
+        if (attachments.isNotEmpty()) body.put("attachments", JSONArray(attachments))
         return when (val r = request("POST", "/api/sessions/${enc(sessionId)}/send", body)) {
             is ApiResult.Ok -> {
                 val o = r.value ?: return ApiResult.Err("响应为空。")
@@ -201,6 +203,43 @@ class DevaClient(
             is ApiResult.Err -> r
         }
     }
+
+    /**
+     * 上传附件字节（设备端只交字节、不交路径）：服务端落盘并登记白名单，
+     * 返回的路径仅供 send 的 attachments[] 使用。
+     */
+    suspend fun uploadAttachment(bytes: ByteArray, name: String): ApiResult<String> =
+        withContext(Dispatchers.IO) {
+            val b = Request.Builder()
+                .url(baseUrl + "/api/attachments?name=" + enc(name))
+                .post(bytes.toRequestBody("application/octet-stream".toMediaType()))
+            tokenProvider()?.takeIf { it.isNotEmpty() }?.let { b.header("Authorization", "Bearer $it") }
+            try {
+                http.newCall(b.build()).execute().use { resp ->
+                    val text = resp.body?.string() ?: ""
+                    if (resp.code == 401) return@withContext ApiResult.Err("未配对或凭据无效，请重新配对。")
+                    val json: JSONObject? = if (text.isNotEmpty()) {
+                        try {
+                            JSONObject(text)
+                        } catch (_: Exception) {
+                            null
+                        }
+                    } else {
+                        null
+                    }
+                    if (!resp.isSuccessful) {
+                        ApiResult.Err(
+                            json?.optString("error")?.takeIf { it.isNotEmpty() } ?: "上传失败（HTTP ${resp.code}）。"
+                        )
+                    } else {
+                        val path = json?.optString("path")?.takeIf { it.isNotEmpty() }
+                        if (path == null) ApiResult.Err("上传响应缺少路径。") else ApiResult.Ok(path)
+                    }
+                }
+            } catch (e: IOException) {
+                ApiResult.Err("连不上服务器：${e.message ?: "网络错误"}")
+            }
+        }
 
     suspend fun abort(turnId: String): ApiResult<Unit> =
         when (val r = request("POST", "/api/turns/${enc(turnId)}/abort", JSONObject())) {

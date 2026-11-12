@@ -46,6 +46,12 @@ class SessionStore(
         val active: MutableStateFlow<String?> = MutableStateFlow(null),
         /** 本机发起的回合 id：turn_start 不重复画气泡（乐观上屏在先）。 */
         val ownTurns: MutableSet<String> = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap()),
+        /**
+         * 本机发送在途标记（send HTTP 飞行中非空）：桌面 turn_start 帧先于 send 响应到达时，
+         * ownTurns 还没登记——据文本相等把该 turn_start 识别为本机回合，不重复画气泡。
+         * sendStarted（成功）/ clearSending（失败或忙时插入）清零。
+         */
+        @Volatile var pendingSendText: String? = null,
         /** 已回填区间起点（全量中的 start）；>0 表示还有更早的可加载。 */
         @Volatile var backfilledStart: Int = 0,
         val hasOlder: MutableStateFlow<Boolean> = MutableStateFlow(false),
@@ -145,7 +151,18 @@ class SessionStore(
         st.flow.value = st.builder.snapshot
         st.active.value = turnId
         st.ownTurns.add(turnId)
+        st.pendingSendText = null // 响应已回:在途标记清零,turn_start 去重交给 ownTurns
         if (st.watching != sessionId) watchSession(sessionId, onReplayReset)
+    }
+
+    /** 用户点发送即调（send 网络飞行前）；失败 / 忙时插入路径调 clearSending 清零。 */
+    fun markSending(sessionId: String, text: String) {
+        state(sessionId).pendingSendText = text
+    }
+
+    /** 发送未成立（Err / 忙时插入无新回合）：清在途标记。 */
+    fun clearSending(sessionId: String) {
+        state(sessionId).pendingSendText = null
     }
 
     /**
@@ -178,7 +195,9 @@ class SessionStore(
             "turn_start" -> if (turnId.isNotEmpty()) st.active.value = turnId
             "done" -> if (turnId.isNotEmpty() && turnId == st.active.value) st.active.value = null
         }
-        val own = st.ownTurns.contains(turnId)
+        val own = st.ownTurns.contains(turnId) ||
+            // turn_start 先于 send 响应到达:据文本相等识别本机在途回合,不再重复画气泡
+            (st.pendingSendText?.let { t -> t.isNotEmpty() && f.data.optJSONObject("user")?.optString("text") == t } == true)
         st.builder.onChatEvent(f.data, isOwnTurn = own)
         // delta 合帧（~30fps）上屏；其余帧立即上屏（发射本身带上已累积的 delta）
         if (type == "text_delta" || type == "thinking_delta") scheduleDeltaFlush(sessionId)
@@ -230,8 +249,11 @@ class SessionStore(
     /** 停止当前订阅（离开会话时调；builder 与 lastEventId 保留，重进可续传）。 */
     fun pause() {
         stream.stop()
-        // watching 清零:重进时重新订阅(Last-Event-ID 续传)
-        states.values.forEach { it.watching = null }
+        // watching 清零:重进时重新订阅(Last-Event-ID 续传);在途发送标记一并清(离开即放弃归属)
+        states.values.forEach {
+            it.watching = null
+            it.pendingSendText = null
+        }
     }
 
     /** 活动回合（本会话正在运行的 turnId，任意发起方；null = 空闲）。 */

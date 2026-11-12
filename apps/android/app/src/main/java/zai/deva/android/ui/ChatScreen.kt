@@ -1,8 +1,15 @@
 package zai.deva.android.ui
 
+import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,11 +23,14 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,11 +53,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import zai.deva.android.AppGraph
 import zai.deva.android.core.ApiResult
@@ -72,6 +85,27 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
     val hasOlder by AppGraph.sessions.hasOlderFlow(sessionId).collectAsState()
 
     val client = AppGraph.client()
+    val context = LocalContext.current
+    // 待发附件（path 来自 /api/attachments 上传；随 send 的 attachments[] 带回，发送后清空）。
+    // v1 选图（GetContent image/*）；忙时插入不带附件（服务端与桌面/IM 同语义，只插正文）。
+    var pendingAttaches by remember { mutableStateOf(listOf<Pair<String, String>>()) }
+    var uploading by remember { mutableStateOf(false) }
+    val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val c = AppGraph.client() ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            uploading = true
+            val picked = readPickedBytes(context, uri, UPLOAD_CAP)
+            when {
+                picked == null -> snackbar.showSnackbar("读取图片失败或超过 ${UPLOAD_CAP / 1024 / 1024}MB 上限。")
+                else -> when (val r = c.uploadAttachment(picked.bytes, picked.name)) {
+                    is ApiResult.Err -> snackbar.showSnackbar(r.message)
+                    is ApiResult.Ok -> pendingAttaches = pendingAttaches + listOf(r.value to picked.name)
+                }
+            }
+            uploading = false
+        }
+    }
 
     // 卡片作答回调：结果由 interaction_resolved 帧收起（桌面/手机同机制，先到的答复生效）
     val onAnswer = { kind: String, key: String, payload: JSONObject ->
@@ -200,10 +234,38 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
 
             // Waiting 态（有未决卡）：输入框禁用并提示，防止用户打字却被静默丢弃（设计 §4 状态机）
             val hasPendingCard = items.any { it is TimelineItem.Card && it.resolved == null }
+            if (pendingAttaches.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    pendingAttaches.forEach { (path, name) ->
+                        AssistChip(
+                            onClick = { pendingAttaches = pendingAttaches.filterNot { it.first == path } },
+                            label = { Text(name, maxLines = 1, modifier = Modifier.widthIn(max = 160.dp)) },
+                            trailingIcon = {
+                                Icon(Icons.Default.Close, contentDescription = "移除附件 $name", modifier = Modifier.padding(end = 4.dp))
+                            }
+                        )
+                    }
+                }
+            }
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
+                IconButton(
+                    enabled = !hasPendingCard && !uploading,
+                    onClick = {
+                        runCatching { pickImage.launch("image/*") }
+                            .onFailure { scope.launch { snackbar.showSnackbar("没有可用的图片选择器。") } }
+                    }
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = "添加附件")
+                }
                 OutlinedTextField(
                     value = input,
                     onValueChange = { input = it },
@@ -234,12 +296,18 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
                             val text = input.trim()
                             if (text.isEmpty()) return@IconButton
                             val c = AppGraph.client() ?: return@IconButton
+                            val attachPaths = pendingAttaches.map { it.first }
                             input = ""
+                            // 在途标记:turn_start 帧先于 send 响应到达时据文本去重(防双气泡)
+                            AppGraph.sessions.markSending(sessionId, text)
                             scope.launch {
-                                when (val r = c.send(sessionId, text)) {
+                                when (val r = c.send(sessionId, text, attachPaths)) {
                                     is ApiResult.Ok -> {
+                                        pendingAttaches = emptyList()
                                         if (r.value.isEmpty()) {
                                             // 忙时回退为「插入进行中的任务」(IM 同口径):无新回合
+                                            // (插入只带正文,附件清单一并清——用户需重选附件)
+                                            AppGraph.sessions.clearSending(sessionId)
                                             snackbar.showSnackbar("已插入进行中的任务，当前步骤结束后送达。")
                                         } else {
                                             AppGraph.sessions.sendStarted(sessionId, r.value, text) {
@@ -254,7 +322,8 @@ fun ChatScreen(sessionId: String, onBack: () -> Unit, onOpenSettings: () -> Unit
                                         }
                                     }
                                     is ApiResult.Err -> {
-                                        input = text // 发不出去，放回输入框
+                                        AppGraph.sessions.clearSending(sessionId)
+                                        input = text // 发不出去，放回输入框（附件清单保留可重试）
                                         snackbar.showSnackbar(r.message)
                                     }
                                 }
@@ -343,3 +412,36 @@ private fun Bubble(text: String, fromUser: Boolean, extra: Modifier = Modifier) 
         )
     }
 }
+
+/** 附件上传的传输上限（与服务端 ATTACHMENT_UPLOAD_MAX 对齐）。 */
+private const val UPLOAD_CAP = 24 * 1024 * 1024
+
+private class PickedBytes(val bytes: ByteArray, val name: String)
+
+/** 读取选中内容的字节与显示名：流式读、超上限即弃（不整载超大文件）；读不到/被吊销返回 null。 */
+private suspend fun readPickedBytes(context: android.content.Context, uri: Uri, cap: Int): PickedBytes? =
+    withContext(Dispatchers.IO) {
+        val name = context.contentResolver.query(uri, null, null, null, null)?.use { c ->
+            val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+        } ?: "image"
+        // 选择器给的 URI 可能已失效/不可读（ENOENT）：吞掉 IO 异常走 null 分支提示，绝不让它冒泡成 FATAL
+        val bytes = try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val buf = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(64 * 1024)
+                var total = 0
+                while (true) {
+                    val n = input.read(chunk)
+                    if (n <= 0) break
+                    total += n
+                    if (total > cap) return@use null
+                    buf.write(chunk, 0, n)
+                }
+                buf.toByteArray()
+            }
+        } catch (_: java.io.IOException) {
+            null
+        }
+        if (bytes == null || bytes.isEmpty()) null else PickedBytes(bytes, name)
+    }
