@@ -1,0 +1,59 @@
+---
+description: "通用设备配对与设备管理参考:配对码生命周期(5 分钟/一次性/原子消费/全局熔断)、设备名唯一与净化、单设备启停/改名/吊销、在线态与最近活动、Origin 纵深校验、明文 LAN 边界"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/main/services/channel-server/pairing.ts
+    - apps/desktop/src/main/services/channel-server/config.ts
+    - apps/desktop/src/main/services/channel-server/auth.ts
+    - apps/desktop/src/main/services/channel-server/activity.ts
+relations:
+  related:
+    - channels/general-device-protocol.mdx
+    - channels/general-device-rest-api.mdx
+    - channels/general-device-client-guide.mdx
+    - android-client/design.mdx
+---
+
+# 通用设备:配对与设备管理
+
+## 配对码生命周期
+
+| 属性 | 值 |
+|---|---|
+| 形态 | 6 位数字(桌面「机器人 → 通用设备 → 生成配对码」显示,并附 `deva://pair?host=…&port=…&code=…` 二维码) |
+| 有效期 | 5 分钟 |
+| 一次性 | **原子消费**:校验与作废在同一步同步完成,并发同码恰好一个成功 |
+| 生成即顶替 | 新码生成旧码立即作废;桌面「作废」按钮同理 |
+| 失败不烧码 | 重名 `409` 等前置校验失败**不消耗**当前码,设备端换名/换参后同码可重试 |
+| 防爆破 | 同 IP 10 次/分滑动窗口(超限 429)+ **全局熔断**:连续失败 20 次锁定配对接口,桌面重新出码即解锁 |
+
+配对成功 → 返回 `deviceId + token` 并在桌面登记设备。设备名全局唯一(重名 `409`,码不消耗)。
+
+## 凭据
+
+- `token`:32 字节随机数 base64url(≈43 字符),作为 `Authorization: Bearer` 使用,**永不过期**。
+- 服务端密文落盘(safeStorage);校验用恒时长比较;明文与密钥不进日志。
+- **吊销**(桌面面板或 IPC):删除配置与密钥、清活动态、**立即掐断该设备全部存活连接**、失效 token 缓存——被吊销 token 重放即刻 `401`。
+- **单设备启停**:`enabled=false` 的设备请求一律 `401`(区别于吊销:配置保留,可随时恢复)。
+
+## 设备名规则
+
+- 净化:去 C0/C1 控制符、零宽与 bidi 覆写字符;trim;截断 40 字符。
+- 唯一:NFKC 归一化后不分大小写比较;重名配对 `409`(不烧码)。
+- 缺省时服务端填「通用设备」——多设备接入时请务必自定义名字。
+- 桌面面板可随时**改名**(同名规则同上);设备端 App 侧改名暂未提供。
+
+## 设备在线态与最近活动
+
+- **online**:该设备存在存活的 SSE 连接(引用计数:同设备多连接全断才离线)。
+- **lastSeenAt**:最近一次携带有效凭据的请求时间(不落盘,桌面重启后归零直到设备再次活动)。
+- 两者随 `general:changed` 推送到桌面面板(配对、启停、吊销、连接变化同样触发)。
+
+## Origin 纵深校验
+
+携带 `Origin` 头的请求(浏览器场景)要求 Origin 主机名属于本机地址集合(`127.0.0.1` / `localhost` / 本机主机名 / 本机全部 LAN IPv4),否则 `403`。原生设备客户端不发送 Origin 头,不受影响。该机制阻断:受害者浏览器中恶意网页对本通道的跨站调用(CSRF)与 DNS rebinding。
+
+## 明文 LAN 边界(v1 文档化决策)
+
+通道为局域网 HTTP 明文。同网段被动攻击者可嗅探 token(获得全部会话读写与卡片应答权,token 无过期——吊销是唯一失效手段);主动中间人可改写 SSE 帧伪造设备端显示。缓解:仅可信网络使用、及时吊销闲置设备、v2 自签证书。桌面「机器人」面板对此有常驻提示。

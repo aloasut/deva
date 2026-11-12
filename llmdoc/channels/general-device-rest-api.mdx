@@ -1,0 +1,224 @@
+---
+description: "通用设备通道 REST API 全量参考:pair/info/sessions/send/answer/messages/deliveries/files 逐端点请求响应示例、busy→inserted 回退、错误码约定、限速与 Origin 校验"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/main/services/channel-server/server.ts
+    - apps/desktop/src/main/services/channel-server/pairing.ts
+    - apps/desktop/src/main/services/channel-server/config.ts
+relations:
+  related:
+    - channels/general-device-protocol.mdx
+    - channels/general-device-sse.mdx
+    - channels/general-device-pairing.mdx
+    - channels/general-device-client-guide.mdx
+---
+
+# 通用设备通道 REST API
+
+约定:Base URL `http://<host>:4317`(默认);除 [POST /api/pair](#post-apipair-配对唯一免鉴权) 外全部需要 `Authorization: Bearer <token>`。请求与响应均为 JSON(UTF-8)。`POST` 请求体上限 64KB。
+
+携带 `Origin` 头的请求:Origin 的主机名必须是服务端本机地址(`127.0.0.1` / `localhost` / 本机任一 LAN IPv4),否则 `403`——浏览器跨站调用被拒;原生设备客户端不发 Origin,不受影响。
+
+---
+
+## 端点总表
+
+| 方法 | 路径 | 说明 | 鉴权 |
+|---|---|---|---|
+| POST | `/api/pair` | 配对换凭据 | 免 |
+| GET | `/api/info` | 版本/协议/能力 | Bearer |
+| GET | `/api/sessions` | 会话列表(`?limit=`) | Bearer |
+| POST | `/api/sessions` | 新建会话 | Bearer |
+| GET | `/api/sessions/:id` | 单会话元信息 | Bearer |
+| POST | `/api/sessions/:id/send` | 发消息(忙时回退插入) | Bearer |
+| POST | `/api/sessions/:id/answer` | 应答交互卡(问答/计划/挂载) | Bearer |
+| POST | `/api/turns/:turnId/abort` | 停止回合 | Bearer |
+| GET | `/api/sessions/:id/messages` | 历史回填(`?start=&limit=`) | Bearer |
+| GET | `/api/sessions/:id/deliveries?toolUseId=` | 一次交付的文件清单 | Bearer |
+| GET | `/api/files?path=&session=` | 下载交付文件(白名单) | Bearer |
+| GET | `/api/sessions/:id/events` | **会话级 SSE**(推荐) | Bearer |
+| GET | `/api/turns/:turnId/events` | 回合级 SSE | Bearer |
+
+---
+
+## POST /api/pair(配对——唯一免鉴权)
+
+用桌面显示的一次性配对码换取长期凭据。
+
+**请求**
+
+```json
+{ "code": "498661", "deviceName": "我的手机" }
+```
+
+- `code`:桌面「机器人 → 通用设备」生成的 6 位数字码,**5 分钟有效、一次性、原子消费**(并发同码恰好一个成功)。
+- `deviceName`:全局唯一(去首尾空格、截断 40 字符、过滤控制字符;NFKC 归一化后不分大小写比较)。重名 → `409`,**配对码不消耗**,换名同码重试即可。缺省时服务端填「通用设备」,但重名会拒,建议必填。
+
+**响应 200**
+
+```json
+{ "deviceId": "dev_mwd1accw_hdp0", "token": "<43 字符 base64url>", "protocol": 1,
+  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device"] }
+```
+
+**错误**:`400` 配对码缺失/不正确/已过期(码此时才作废,失败不烧码);`409` 设备重名(**码不烧**);`429` 超限(同 IP 10 次/分,或全局连续失败 20 次熔断——桌面重新出码即解除)。
+
+安全细节:token 服务端密文存储;校验为恒时长比较;`deviceName` 在服务端净化(控制字符/零宽/bidi 移除)。
+
+---
+
+## GET /api/info
+
+```json
+{ "version": "33.4.11", "hostname": "MacBookProM1.local", "platform": "darwin",
+  "firstRun": false, "protocol": 1,
+  "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device"] }
+```
+
+设备端应在启动时记录 `protocol` 与 `capabilities`;不满足所需能力时提示升级,而非猜测语义。
+
+---
+
+## GET /api/sessions?limit=N
+
+会话列表,按 `updatedAt` 倒序。**成员会话(子智能体)不进列表**(与桌面/IM 同口径)。`limit` 为正整数时返回前 N 条(`≤500`),响应另带 `total`(全量数)——设备端可用 `total > sessions.length` 判断截断。
+
+```json
+{ "sessions": [ { "id": "sess_…", "title": "…", "personaId": "…|null",
+                  "updatedAt": 1730000000000, "busy": false, "archived": false } ],
+  "total": 21 }
+```
+
+`busy=true` 表示该会话有正在运行的回合。
+
+---
+
+## POST /api/sessions
+
+新建空会话 → `{ "id": "sess_…" }`。标题由首轮消息自动派生。
+
+---
+
+## GET /api/sessions/:id
+
+单会话元信息:
+
+```json
+{ "id": "sess_…", "title": "…", "personaId": "…|null", "busy": false,
+  "archived": false, "pendingInserts": [] }
+```
+
+`pendingInserts` v1 恒为空数组(插入消息走 send 的忙时回退,不落独立队列)。
+
+---
+
+## POST /api/sessions/:id/send
+
+发送消息。**两种成功形状**:
+
+| 场景 | 响应 | 设备端处理 |
+|---|---|---|
+| 会话空闲,发起新回合 | `{ "turnId": "turn_…" }` | 记录 turnId,订阅事件流,乐观上屏用户气泡 |
+| 会话忙(有回合运行中) | `{ "inserted": true }` | 提示「已插入进行中的任务,当前步骤结束后送达」,**不新建订阅**(现有事件流会继续) |
+
+**请求**:`{ "text": "…", "attachments"?: ["…"], "modelRef"?: "providerId:modelId", "effort"?: "…" }`。`attachments`/`modelRef`/`effort` v1 设备端可不发(桌面按默认解析);发送时机在回合进行中也没关系——桌面语义是插入当前回合尾部。
+
+**错误**:`404` 会话不存在;`409` 忙且插入失败(罕见);`500` 其余(含模型未配置)。
+
+发送成功后,**先订阅该会话的事件流,再认为消息已发出**(见[事件流](general-device-sse.mdx)的时序要点)。
+
+---
+
+## POST /api/sessions/:id/answer
+
+应答交互卡。卡片由事件流的 `ask_user` / `plan_review` / `mount_request` 事件带来,`key` 为卡标识。**先到者生效**:一设备应答后服务端广播 `interaction_resolved`,其余设备同 key 再答 → `409`(并收到广播把卡收起)。
+
+**请求**(按 `kind` 分三种 payload):
+
+```jsonc
+// kind = "ask":逐题作答,answers[i] 对应 questions[i];null 表示放弃
+{ "key": "…", "kind": "ask", "payload": { "answers": ["Kotlin", "自由输入文本"] } }
+// 放弃整卡:{ "payload": { "answers": null } }
+
+// kind = "plan":"approve" 批准 / "keep" 带反馈继续完善 / "ignore" 取消
+{ "key": "…", "kind": "plan", "payload": { "decision": "approve" } }
+{ "key": "…", "kind": "plan", "payload": { "decision": "keep", "feedback": "再补一个…\n…" } }
+
+// kind = "mount":设备端无法指定桌面真实路径,恒传 null(= 暂不挂载,指引去桌面)
+{ "key": "…", "kind": "mount", "payload": { "path": null } }
+```
+
+**响应**:`{ "ok": true }`;**`409`** 卡已结束(先到者生效)——收到 `409` 时设备端应检查事件流的 `interaction_resolved` 帧把卡收起,而非重试。
+
+---
+
+## POST /api/turns/:turnId/abort
+
+停止回合。幂等:未知/已结束的 turnId 也返回 `{ "ok": true }`。
+
+---
+
+## GET /api/sessions/:id/messages?start=&limit=
+
+历史回填。`start` 为全量投影中的起点(默认 `total-400`,即最新一段),`limit` 上限 2000。**响应字段**:
+
+```json
+{ "sessionId": "…", "total": 312, "start": 0,
+  "messages": [
+    { "i": 0, "role": "user", "text": "…", "tools": [], "attachments": 0 },
+    { "i": 1, "role": "assistant", "text": "…",
+      "tools": ["present_files"],                       // 折叠工具行(名字)
+      "files": [ { "path": "/abs/…", "name": "sample.png", "size": 69, "image": true } ],
+      "card": { "kind": "ask", "key": "call_…",
+                "questions": [ { "question": "…", "options": [{"label":"…","description":"…"}],
+                                 "multiSelect": false, "required": true } ] }
+    } ] }
+```
+
+- `card` 仅在该卡**尚无终态**时出现(未决卡);已答的卡不回填——设备端应答后靠 `interaction_resolved` 事件收起。
+- `files` 为该消息交付的文件(仅在交付成功时出现);`path` 可直接用于 `/api/files`。
+- `tools` 是工具名数组,设备端折叠为一行;`attachments` 是正文之外的附件个数。
+
+---
+
+## GET /api/sessions/:id/deliveries?toolUseId=…
+
+一次 `present_files` 交付的文件清单(手机在直播中收到该工具的成功结果后调用):
+
+```json
+{ "files": [ { "path": "/abs/sample.png", "name": "sample.png", "size": 69, "image": true } ] }
+```
+
+---
+
+## GET /api/files?path=…&session=…
+
+下载交付文件。**白名单**:`path` 必须逐字出现在该会话的交付清单里(不接受任意路径),否则 `403`。响应为文件原始字节流,`Content-Type` 按扩展名。文件不存在(被移动/删除)→ `404`。
+
+---
+
+## SSE 订阅端点
+
+| 端点 | 投递范围 |
+|---|---|
+| `GET /api/sessions/:id/events` | 该会话**全部回合**的 chat 帧 + 通知(**推荐**,设备端主用) |
+| `GET /api/turns/:turnId/events` | 仅该回合的 chat 帧 |
+
+均支持 `Last-Event-ID` 头与 `?lastEventId=N` 等价的续传语义、心跳与连接治理。详见[事件流](general-device-sse.mdx)。
+
+---
+
+## 错误码约定
+
+| 码 | 语义 | 设备端处理 |
+|---|---|---|
+| 400 | 参数/编码不合法 | 展示 `error` 文案 |
+| 401 | 未配对/凭据无效/设备被停用 | 转「重新配对」流程,清除本地凭据 |
+| 403 | 越权(白名单外路径、跨源 Origin) | 不重试,提示 |
+| 404 | 会话/文件不存在 | 不重试 |
+| 409 | 业务冲突:卡已结束(先到者生效)、忙且插入失败 | 拉最新状态,收卡/提示 |
+| 429 | 限速(配对 10 次/分/IP,全局熔断 20 连败) | 退避 ≥60s,引导桌面重新出码 |
+| 500 | 服务端内部错误 | 可重试一次,再失败提示 |
+
+`error` 字段为人类可读中文文案,可直接展示。所有错误响应形如 `{ "error": "…" }`。

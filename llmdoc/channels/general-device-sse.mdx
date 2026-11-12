@@ -1,0 +1,135 @@
+---
+description: "通用设备通道 SSE 事件流参考:帧格式、回合级/会话级订阅、Last-Event-ID 续传与 replay_reset、连接治理(配额/背压/心跳)、ChatStreamEvent 事件类型全集与设备端最小映射集"
+kind: reference
+code:
+  paths:
+    - apps/desktop/src/main/services/channel-server/sse.ts
+    - apps/desktop/src/main/services/chat.ts
+    - apps/android/app/src/main/java/zai/deva/android/core/EventStream.kt
+relations:
+  related:
+    - channels/general-device-protocol.mdx
+    - channels/general-device-rest-api.mdx
+    - channels/general-device-client-guide.mdx
+---
+
+# 通用设备通道 SSE 事件流
+
+两个订阅端点,帧格式相同:
+
+| 端点 | 投递范围 | 设备端用途 |
+|---|---|---|
+| `GET /api/sessions/:id/events` | 该会话**全部回合**的 chat 帧 + 通知 | **主用**。进入会话即订阅,任意发起方(本机/桌面/定时任务)的回合实时可见 |
+| `GET /api/turns/:turnId/events` | 仅该回合的 chat 帧 | 兼容场景;设备端主流程不建议用 |
+
+两者均支持 `Last-Event-ID` 头续传、`retry:` 服务端建议、15 秒 `: ping` 心跳。
+
+## 帧格式
+
+```text
+retry: 3000
+
+id: 7
+event: chat
+data: {"sessionId":"sess_…","turnId":"turn_…","type":"turn_start","user":{"role":"user","text":"…","attachments":[]}}
+
+id: 8
+event: chat
+data: {"sessionId":"…","turnId":"…","type":"text_delta","text":"OK，这就回你。"}
+
+: ping
+```
+
+- `id` **全局单调递增**(跨会话/跨回合同一计数器),设备端只需记住最近一帧的 id。
+- `event` 仅两种:`chat`(会话内容事件,`data` 内平铺 `sessionId`/`turnId` + 事件字段)与 `notice`(通道通知,目前仅 `replay_reset`)。
+- `data` 为单行 JSON;实现方仍应按 SSE 规范支持多行 `data:` 拼接。
+- 心跳为 `: ping` 注释行,15 秒一次;**任何行(含心跳)都应刷新存活计时**——超过 45 秒无任何行即可判死重连(服务端对停滞连接也有 8MB 写缓冲踢除)。
+
+## 订阅时序(关键)
+
+**先订阅,后发送**。发送(`POST …/send`)返回 `turnId` 的瞬间回合已经开始,`turn_start` 是第一帧——晚于发送才建立连接的订阅者**收不到已发出的帧**(直播不补发)。正确时序:
+
+1. 进入会话即建立会话级 SSE 连接(此时通常空闲,只有心跳)。
+2. 用户发送 → `POST …/send` → 得到 `turnId` → 同一连接上实时收到 `turn_start`/`text_delta`/…/`done`。
+3. 断线后重连:带上最近一帧的 `id` 作为 `Last-Event-ID`,服务端补发增量。
+
+对**已结束**的回合做回放:连接时带 `Last-Event-ID: N`,服务端补发 ring 中 `id > N` 且属于该会话的帧;注意回放条件是**严格大于**,取 `N = 首帧id - 1` 才能拿到首帧。
+
+## Last-Event-ID 与 replay_reset
+
+服务端为每会话维护环形缓冲(2000 帧 / 5MB 字节预算;超限丢最老,>64KB 大帧入环时降级为 `__truncated__` 占位)。连接时带 `Last-Event-ID: N`:
+
+- `N` 之后该会话的缓冲帧**全部补发**(含其它回合的帧)。
+- `N + 1 < ring 首帧 id`(缓冲已淘汰到 N 之前)或 `N ≥ 服务端计数器`(来自上一进程)→ 先发一帧 `notice`:
+
+```json
+{ "type": "replay_reset", "sessionId": "sess_…" }
+```
+
+设备端收到 `replay_reset` 应:清零本地 `lastEventId`、**重新拉取** `GET …/messages` 整体重填时间线。注意失败处理:重填失败时**保留现有时间线**并置错误横幅可重试,不要先清屏后失败导致空白。
+
+回合级订阅无 `Last-Event-ID` 时只收直播帧(收不到发送瞬间已发的 `turn_start`)——这是设备端应主用会话级流的原因之一。
+
+## 连接治理
+
+| 规则 | 值 | 行为 |
+|---|---|---|
+| 全局连接上限 | 64 | 超限 → `429`(建连前拒绝) |
+| 每设备连接上限 | 4 | 超限 → `429` |
+| 心跳 | 15s `: ping` | 停滞连接(写缓冲 >8MB)在心跳/帧写路径被服务端踢除 |
+| 会话删除 | — | 对应 ring 立即回收;运行中回合先被桌面中止 |
+
+设备端重连使用指数退避(建议 1s→2s→…→30s 封顶,±20% 抖动),并实现 45s 看门狗。
+
+## 事件类型全集(chat 帧)
+
+`data` 通用字段:`sessionId`、`turnId`(通知/会话级事件可为空串)、`type`。以下为全部类型;设备端**最小映射集**之外的类型忽略并计数即可,不要抛错。
+
+### 回合与内容
+
+| type | payload 要点 | 语义 / 设备端处理 |
+|---|---|---|
+| `turn_start` | `user: { role, text, attachments[] }` | 回合开始,`user.text` 是用户消息。**非本机发起的回合据此上屏用户气泡**(回合发现);本机发起的回合已在发送时乐观上屏,应按 turnId 去重 |
+| `text_delta` | `text` | 追加助手正文(流式)。`stream_reset` 时丢弃本步已画的残缺尾,重收完整内容 |
+| `thinking_delta` | `text` | 追加思考流(可折叠展示) |
+| `tool_call` | `id`, `name` | 工具开始:折叠为一行「正在 name…」 |
+| `tool_result` | `id`, `name`, `summary`, `isError` | 工具结束:更新该行;`isError=true` 标红。`name == "present_files"` 且非错误时,调 `GET /api/sessions/:id/deliveries?toolUseId=id` 拉交付清单并渲染交付卡 |
+| `done` | `stopReason`(如 `end_turn`/`aborted`), `durationMs` | 回合结束:清除活动回合标记。注意 `durationMs` 已扣除等待人工应答的时间 |
+| `error` | `message` | 回合级错误:展示,不重试同一 turnId |
+| `stream_reset` | — | 桌面重连后重跑当前步骤:**丢弃末尾本步残缺的助手 thinking/text 尾部**(以工具行/用户消息为边界),随后重收完整内容 |
+
+### 交互卡(先到者生效)
+
+| type | payload 要点 | 设备端处理 |
+|---|---|---|
+| `ask_user` | `key`, `questions: [{ question, options: [{label, description?}], multiSelect, required }]` | 渲染问答卡(单选/多选/自由输入;`required=false` 可跳过)。提交:`POST …/answer {key, kind:"ask", payload:{answers:[…]}}`,`null` 表示放弃 |
+| `plan_review` | `key`, `plan` | 渲染计划卡:批准 `{decision:"approve"}` / 继续完善 `{decision:"keep", feedback:"…"}` / 取消 `{decision:"ignore"}` |
+| `mount_request` | `key`, `tool`, `path`, `member?` | 挂载请求卡:设备端**只有「暂不挂载」**(无法指定桌面真实路径),`{kind:"mount", payload:{path:null}}`;需要挂载时指引去桌面 |
+| `interaction_resolved` | `key`, `kind`, `answers?` / `decision?` / `path?` / `feedback?` | **任意来源**的应答(先到者生效):把同 `key` 的卡收成终态。自己提交的 answer 得到 `409` 时也以此帧收卡 |
+
+### 进度与状态
+
+| type | payload 要点 | 设备端处理 |
+|---|---|---|
+| `todos` | `state: { active: { id, title, items: [{content, status: pending|in_progress|completed}] } } \| { active: null }` | 只读待办清单:`active=null` 时撤下节点,否则整卡替换(逐条 ☐/▶/☑) |
+| `usage` | `input`, `output`, `cacheRead?`, `cacheWrite?` | 本步 token 用量(小字提示) |
+| `insert` | `text` | 桌面在回合进行中插入了用户消息(提示行) |
+| `auto_retry` | `reason`, `attempt`, `max` | 模型/网关自动重试中(小字「自动重试 n/max」) |
+| `reconnecting` | — | 模型提供方重连中(可显示状态,不用断开本地订阅) |
+| `compacting` | `active: boolean` | 上下文压缩开始/结束(状态行) |
+| `compacted` | — | 压缩完成 |
+
+### 忽略并计数(兼容规则)
+
+`card_resolved`(桌面角色/任务名片)、`member_report` / `member_progress`(子智能体)、`inserts_returned` 等:设备端 v1 无对应 UI,**忽略并计数**,绝不抛错。服务端未来新增类型同样落入此路径。
+
+## 通知帧(notice)
+
+`event: notice`,`data` 形如 `{ "type": "replay_reset", "sessionId": "…" }`:缓冲已淘汰到 `Last-Event-ID` 之前、或服务端计数器已重置。设备端应清零本地 id、重新拉取 `/messages` 整体重填;重填失败保留现有时间线并置错误横幅可重试。
+
+## 已验证行为(门禁断言)
+
+- 会话级直播:先挂流后发送,`turn_start`/`text_delta`/`done` 三帧全部实时到达。
+- 唯一名重试:重名 `409` **不消耗**配对码,同码换新名立即成功。
+- 原子竞态:并发同码 ×3,恰好一个 `deviceId+token`,其余 `400`。
+- 版本化:pair 与 `/api/info` 均携带 `protocol:1` + 8 项 capabilities。

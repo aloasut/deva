@@ -1,0 +1,91 @@
+---
+description: "通用设备(GeneralDevice)入站通道协议总览:局域网 HTTP+SSE、Bearer 鉴权、配对码、协议版本化与能力协商、安全边界——外部实现者零知识入口与文档集目录"
+kind: guide
+code:
+  paths:
+    - apps/desktop/src/main/services/channel-server/server.ts
+    - apps/desktop/src/main/services/channel-server/index.ts
+    - apps/desktop/src/main/services/channel-server/auth.ts
+relations:
+  related:
+    - channels/general-device-rest-api.mdx
+    - channels/general-device-sse.mdx
+    - channels/general-device-pairing.mdx
+    - channels/general-device-client-guide.mdx
+    - channels/remote-contract.mdx
+    - android-client/design.mdx
+---
+
+# 通用设备通道协议总览(GeneralDevice)
+
+## 这是什么
+
+Deva 是一个**本地优先**的桌面 AI 工作台(Electron):模型调用、文件读写、会话数据全部留在你的电脑上。**通用设备(GeneralDevice)通道**让局域网内的手机、平板或任何实现本协议的客户端接入同一台 Deva——浏览会话、发送消息、实时接收流式输出、应答交互卡片(问答/计划审批)、下载交付文件。
+
+协议刻意做到**零知识可用**:本文档集就是全部依据,不需要读 Deva 源码。安卓 App(`apps/android/`)是参考实现。
+
+## 文档集目录
+
+| 文档 | 内容 |
+|---|---|
+| [REST API](general-device-rest-api.mdx) | 全部 HTTP 端点:配对、会话、发送、应答、交付文件,逐个请求/响应示例与错误码 |
+| [SSE 事件流](general-device-sse.mdx) | 帧格式、回合级/会话级两种订阅、Last-Event-ID 续传与 replay_reset、连接治理、事件类型全集 |
+| [配对与设备管理](general-device-pairing.mdx) | 配对码生命周期、原子消费、设备名唯一、单设备启停/改名/吊销、在线态、Origin 纵深校验 |
+| [客户端接入指南](general-device-client-guide.mdx) | curl 从零 walkthrough、订阅时序要点、忙时回退、参考实现与已知坑 |
+
+## 架构一览
+
+```
+┌──────────┐   HTTP REST + SSE(局域网, 明文)   ┌─────────────────────┐
+│  设备端   │ ────────────────────────────────▶ │  Deva 桌面端         │
+│ (任意实现) │ ◀──────────────────────────────── │  channel-server     │
+└──────────┘   Bearer <token>                   │  (只转发,不复制规则)  │
+                                                └──────────┬──────────┘
+                                                           ▼
+                                                 chatRuntime / chat-bus
+                                                 (与桌面 UI 走同一入口)
+```
+
+通道服务(`channel-server`)职责单一:**把已存在的会话引擎与事件流暴露给已配对设备**,不复制任何业务规则。发消息、答卡、插入任务的语义与桌面 UI 完全一致,因为走的是同一入口。
+
+## 传输与寻址
+
+- **协议**:HTTP/1.1 REST + SSE(`text/event-stream`)长连接;不做 WebSocket。
+- **默认端口**:4317(TCP;可在桌面 `config.json → generalServer.port` 修改,冲突时通道启动失败并明确报错,不静默换端口)。
+- **监听地址**:默认 `0.0.0.0`(局域网可达);`generalServer.host = "127.0.0.1"` 即「仅本机」。
+- **明文边界**:局域网内为 HTTP 明文——这是 v1 的文档化决策。同网段攻击者可嗅探 token 与全部流量;请仅在可信网络使用,v2 计划自签证书。
+- **Origin 纵深校验**:携带 `Origin` 头的请求必须来自本机地址,阻断浏览器里恶意页面的跨站调用;原生设备客户端不发送 Origin,不受影响。
+
+## 鉴权模型
+
+1. **配对**(唯一免鉴权端点):桌面出 **6 位配对码**(5 分钟有效、一次性、原子消费),设备 `POST /api/pair` 换取 `deviceId + token`(32 字节)。token 只在设备端安全存储,服务端密文落盘。
+2. **Bearer**:除 `/api/pair` 外一切请求带 `Authorization: Bearer <token>`;token 未知/设备被停用/被吊销 → 一律 `401`。
+3. **设备生命周期**:配对 → 可随时**停用**(鉴权短路)/**改名**(全局唯一,NFKC 不分大小写)/**吊销**(配置+密钥+存活连接一并清除)。
+
+详见[配对与设备管理](general-device-pairing.mdx)。
+
+## 版本化与能力协商
+
+`GET /api/info` 与配对响应均携带:
+
+```json
+{ "protocol": 1, "capabilities": ["turn-stream","session-stream","answers","deliveries","files","set-host","set-enabled","rename-device"] }
+```
+
+- `protocol` 不匹配或所需 capability 缺失时,设备端应提示升级,而非猜测语义。
+- 兼容规则:**未知字段忽略;未知事件类型忽略并计数**,绝不抛错(见[事件流](general-device-sse.mdx))。
+
+## 多设备模型
+
+- **同一通道、同一端口、多设备并存**:每台设备独立 `deviceId + token`,互相平等。
+- 设备名全局唯一(配对重名 → `409`,不消耗配对码,换名同码重试即可)。
+- 任意设备可被桌面随时停用/吊销;吊销立即断开其全部连接。
+- 交互卡片仲裁为「**先到者生效**」:一台设备应答后,服务端广播 `interaction_resolved`,其余设备的同卡请求得到 `409`、卡片收起——类似验证码组内抢答机制。
+
+## 会话级订阅(重要)
+
+通道提供**回合级**与**会话级**两种 SSE 订阅。设备端应使用**会话级**(`/api/sessions/:id/events`):它能实时看到**任意发起方**(本机/桌面/定时任务)的回合——这是「同一后端、同一会话」承诺的核心。细节见[事件流](general-device-sse.mdx)。
+
+## 明确不做(v1)
+
+附件上传、per-device 会话范围收窄(scope 仅预留)、公网中继、多用户/多实例互联、iOS 客户端(v2 候选)。

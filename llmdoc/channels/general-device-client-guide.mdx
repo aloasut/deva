@@ -1,0 +1,107 @@
+---
+description: "通用设备客户端接入指南:curl 从零 walkthrough(配对→订阅→发送→应答→交付)、订阅时序要点、忙时回退、参考实现(apps/android)与已知坑(URI 截断/限速节奏/码过期)"
+kind: guide
+code:
+  paths:
+    - apps/android/app/src/main/java/zai/deva/android/core/EventStream.kt
+    - apps/android/app/src/main/java/zai/deva/android/core/SessionStore.kt
+    - apps/android/app/src/main/java/zai/deva/android/core/DevaClient.kt
+    - apps/android/app/src/main/java/zai/deva/android/ui/ChatScreen.kt
+relations:
+  related:
+    - channels/general-device-protocol.mdx
+    - channels/general-device-rest-api.mdx
+    - channels/general-device-sse.mdx
+    - channels/general-device-pairing.mdx
+    - android-client/design.mdx
+---
+
+# 通用设备客户端接入指南
+
+面向从零实现客户端的开发者:一个最小客户端只需要 HTTP 客户端 + SSE 解析器 + 安全存储,不需要任何 Deva 内部知识。安卓 App(`apps/android/`)是参考实现。
+
+## 状态机(建议)
+
+```
+Disconnected ──pair──▶ Paired(idle) ──进入会话──▶ Streaming?(事件驱动)
+     ▲                    │  401/停用                  │
+     └──── 清凭据 ◀───────┘                          ▼
+                                        activeTurn 非空 = 运行中(可 abort)
+```
+
+- **Paired(idle)**:可浏览/新建会话、看历史。
+- **Streaming**:事件流有活动回合(turn_start 置位、done 清位)——**任意发起方**,桌面发的回合同样可见、同样可停止。
+
+## 从零 Walkthrough(curl)
+
+以下假设服务端 `H=127.0.0.1:4317`、桌面已出配对码(见桌面「机器人 → 通用设备」)。每一对的响应均为真实形状。
+
+```bash
+# 1. 配对(码 5 分钟内有效;失败不烧码——重名 409 换名重试即可)
+CURL_TOKEN=$(curl -s -X POST http://$H/api/pair -H 'content-type: application/json' \
+  -d '{"code":"498661","deviceName":"my-device"}' | jq -r .token)
+
+# 2. 会话列表(成员会话已被服务端过滤)
+curl -s http://$H/api/sessions -H "Authorization: Bearer $CURL_TOKEN"
+
+# 3. 新建会话
+SID=$(curl -s -X POST http://$H/api/sessions -H "Authorization: Bearer $CURL_TOKEN" | jq -r .id)
+
+# 4. 先订阅会话级流(后台),再发送——保证 turn_start/text_delta/done 全部实时收到
+curl -s -N --max-time 30 -H "Authorization: Bearer $CURL_TOKEN" \
+  "http://$H/api/sessions/$SID/events" > events.sse &
+sleep 1
+
+# 5. 发送(忙时会自动回退为插入,响应为 {"inserted":true})
+curl -s -X POST "http://$H/api/sessions/$SID/send" \
+  -H "Authorization: Bearer $CURL_TOKEN" -H 'content-type: application/json' \
+  -d '{"text":"你好"}'
+
+# 6. 应答交互卡(收到 ask_user 事件后;先到者生效,后答 409)
+curl -s -X POST "http://$H/api/sessions/$SID/answer" \
+  -H "Authorization: Bearer $CURL_TOKEN" -H 'content-type: application/json' \
+  -d '{"key":"<ask_user.key>","kind":"ask","payload":{"answers":["Kotlin"]}}'
+
+# 7. 下载交付文件(收到 present_files 交付后;路径必须在交付白名单内)
+curl -s -o out.png "http://$H/api/files?path=<urlencoded 路径>&session=$SID" \
+  -H "Authorization: Bearer $CURL_TOKEN"
+```
+
+事件帧原文示例(实拍):
+
+```text
+id: 5
+event: chat
+data: {"sessionId":"…","turnId":"turn_…","type":"turn_start","user":{"role":"user","text":"hello","attachments":[]}}
+```
+
+## 协议要点与坑(实现者必读)
+
+1. **先订阅后发送**:`turn_start` 在 send 返回时已发出。晚于发送才建立的连接是直播视角——收不到已发出的帧。要补历史用 `GET …/messages`;要补增量用 `Last-Event-ID`。取「首帧 id − 1」作 Last-Event-ID 可回放全部(回放条件是严格大于)。
+2. **回放边界**:fresh 服务端首帧 id=1,`Last-Event-ID: 1` 的回放从 id≥2 开始——首帧(通常是 turn_start)只能靠直播或更低 id。`id+1 < ring首帧id` 会触发 `replay_reset`(通知帧),此时应整体重拉 `/messages` 并清零本地 id。
+3. **重置语义**:`stream_reset` = 桌面重连后重跑当前步骤,设备端应**丢弃末尾残缺的助手 thinking/text 尾部**(以工具行/用户消息为边界),随后重收完整内容——不清除会导致文本重复。
+4. **忙时发送**:忙 → 服务端自动回退为插入(响应 `{"inserted":true}`),不新建回合。设备端区分:`turnId` 存在走新回合流程,只有 `inserted` 走提示流程。
+5. **卡片仲裁**:同 key 先到者生效,后答 `409`。同时监听 `interaction_resolved` 帧把卡收起——答案来自哪个设备都一样。
+6. **未知类型**:忽略并计数(服务端保证向后兼容,不会删除已有字段)。
+7. **限速**:配对 10 次/分/IP + 连续失败 20 次全局熔断(桌面重新出码解锁)。配对尝试请间隔 ≥7s。
+8. **码过期**:5 分钟。过期错误为 `配对码不正确或已过期` ——重新获取即可,不烧码。
+9. **URI 转义**:文件路径、会话 id 进 URL 必须百分号编码;畸形编码服务端回 400/404 而非 500。
+10. **客户端存活**:实现 45s 看门狗(超时无任何行判死重连)——服务端 15s 心跳是存活信号。
+
+## 参考实现(apps/android)
+
+安卓 App 是协议的完整参考实现,关键对应:
+
+| 协议面 | 实现位置 |
+|---|---|
+| 会话级订阅 + ownTurns 去重 | `core/SessionStore.kt`(watchSession/onSessionFrame) |
+| SSE 解析/退避/看门狗/续传 | `core/EventStream.kt`(代际号守护生命周期) |
+| REST 全量 + 错误码映射 | `core/DevaClient.kt` |
+| 交互卡 UI 与先到者生效 | `ui/Cards.kt` + `interaction_resolved` 收卡 |
+| 交付卡/下载/图片缓存 | `ui/Deliverables.kt` + `core/FileSaver.kt` |
+| 深链 deva://pair 预填 | `MainActivity.kt` handleDevaLink |
+| 凭据安全存储 | `core/SecureStore.kt`(Keystore 加密) |
+
+## 桌面侧能力对照(协议外,经桌面 UI)
+
+以下能力通过桌面面板操作,不走设备协议:单设备启停/改名/吊销、通道总开关、仅本机模式、配对码生成与作废、在线态与最近活动展示。设备端如需感知变化,监听 `general:changed` 推送(v2 计划开放给协议)。
