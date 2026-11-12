@@ -78,7 +78,7 @@
       "validatedRevision": "e7b5510057c0855cac62a4dfdb8a01d7290701f9"
     },
     "channels/general-device-protocol.mdx": {
-      "validatedRevision": "dedc73c7acd0bc9544c2eccc1ad008ae2cfed78a"
+      "validatedRevision": "27533a5863d2e52dbc86202cc95d69fe09aea5e8"
     },
     "channels/general-device-rest-api.mdx": {
       "validatedRevision": "c5d7330ff3b6d11b93133b2cbd21771b598c2e43"
@@ -90,7 +90,7 @@
       "validatedRevision": "e7b5510057c0855cac62a4dfdb8a01d7290701f9"
     },
     "channels/general-device-client-guide.mdx": {
-      "validatedRevision": "6fd4765012ce8fe59e39809c6e317f8ec93ac9a1"
+      "validatedRevision": "27533a5863d2e52dbc86202cc95d69fe09aea5e8"
     }
   },
   "convergence": {
