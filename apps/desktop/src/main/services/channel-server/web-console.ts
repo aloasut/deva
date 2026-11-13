@@ -434,7 +434,9 @@ export const WEB_CONSOLE_HTML = `<!doctype html>
       window.__wb.lastFetchError = String(e && e.message || e)
       return new Promise(function (res) { setTimeout(res, 3000) }).then(function () {
         if (state.sid !== sid) return
-        return backfill().then(sseLoop)
+        // 不在此处整体回填：Last-Event-ID 在 ring 内时服务端会原地带回错过的帧（避免与直播帧
+        // 双重渲染）；只有服务端判「超出缓冲」时才发 replay_reset，由其处理函数负责整体回填。
+        return sseLoop()
       })
     })
   }
