@@ -292,6 +292,7 @@ const zhCN: MessageTree = {
       memberStatus: '查看成员状态',
       readMain: '查看主对话',
       reportToMain: '交给主对话处理',
+      replyTask: '交回任务结论',
       skill: '加载技能',
       toolSearch: '查看工具用法',
       createTask: '创建定时任务',
@@ -376,6 +377,7 @@ const zhCN: MessageTree = {
         taskStatus: '已查看定时任务',
         readMain: '已查看主对话',
         reportToMain: '已交给主对话处理',
+        replyTask: '已交回结论',
         skill: '已加载技能',
         toolSearch: '已查看用法',
         browser: '已操作浏览器',
@@ -427,6 +429,7 @@ const zhCN: MessageTree = {
         taskStatus: '正在查看定时任务',
         readMain: '正在查看主对话',
         reportToMain: '正在交给主对话',
+        replyTask: '正在交回结论',
         skill: '正在加载技能',
         toolSearch: '正在查看用法',
         browser: '正在操作浏览器',
@@ -478,6 +481,7 @@ const zhCN: MessageTree = {
         taskStatus: '查看定时任务',
         readMain: '查看主对话',
         reportToMain: '交给主对话处理',
+        replyTask: '交回结论',
         skill: '加载技能',
         toolSearch: '查看用法',
         browser: '操作浏览器',
@@ -738,7 +742,7 @@ const zhCN: MessageTree = {
     replyModeOpt: { stream: '流式卡片', final: '仅最终结果' },
     replyModeHint: {
       stream: '回复和工具调用实时更新在同一张卡片里。',
-      final: '只在需要你决定和回复完成时更新，消息更少。'
+      final: '只发最终回复和需要你处理的事。'
     },
     scope: '回复范围',
     scopeOpt: { all: '全部', personas: '角色', sessions: '对话' },
@@ -1353,6 +1357,7 @@ const zhCN: MessageTree = {
     quote: '引用',
     quoteRemove: '取消引用',
     deleteTurnsConfirm: '删除后所选轮次的消息将从对话与模型上下文中一并永久移除，无法恢复。',
+    deleteTurnsBusy: '对话正在进行中，请等它结束后再删除。',
     deletePersonaConfirm: '删除后该角色不可恢复，此操作无法撤销。',
     deletePersonaConfirmWithChats:
       '删除后该角色不可恢复，与其关联的 {count} 个对话也将一并永久删除，此操作无法撤销。',
@@ -1781,6 +1786,7 @@ const en: MessageTree = {
       memberStatus: 'Check member status',
       readMain: 'Read main chat',
       reportToMain: 'Hand off to main chat',
+      replyTask: 'Reply with a task result',
       skill: 'Load skill',
       toolSearch: 'Look up tool usage',
       createTask: 'Create scheduled task',
@@ -1853,6 +1859,7 @@ const en: MessageTree = {
         taskStatus: 'Checked scheduled task',
         readMain: 'Read the main chat',
         reportToMain: 'Handed off to main chat',
+        replyTask: 'Replied with a result',
         skill: 'Loaded skill',
         toolSearch: 'Read usage:',
         browser: 'Used browser',
@@ -1904,6 +1911,7 @@ const en: MessageTree = {
         taskStatus: 'Checking scheduled task',
         readMain: 'Reading the main chat',
         reportToMain: 'Handing off to main chat',
+        replyTask: 'Replying with a result',
         skill: 'Loading skill',
         toolSearch: 'Reading usage:',
         browser: 'Using browser',
@@ -1955,6 +1963,7 @@ const en: MessageTree = {
         taskStatus: 'Check scheduled task',
         readMain: 'Read the main chat',
         reportToMain: 'Hand off to main chat',
+        replyTask: 'Reply with a result',
         skill: 'Load skill',
         toolSearch: 'Read usage:',
         browser: 'Use browser',
@@ -2213,7 +2222,7 @@ const en: MessageTree = {
     replyModeOpt: { stream: 'Streaming card', final: 'Final result only' },
     replyModeHint: {
       stream: 'The reply and tool calls update live in a single card.',
-      final: 'Only updates when your decision is needed and when the reply is done.'
+      final: 'Sends only the final reply and anything that needs you.'
     },
     scope: 'Reply scope',
     scopeOpt: { all: 'All', personas: 'Personas', sessions: 'Chats' },
@@ -2825,6 +2834,7 @@ const en: MessageTree = {
     quoteRemove: 'Remove quote',
     deleteTurnsConfirm:
       'The selected turns will be permanently removed from both the conversation and the model context. This cannot be undone.',
+    deleteTurnsBusy: 'This chat is busy right now. Delete the turns when it finishes.',
     deletePersonaConfirm:
       'This persona will be permanently removed and cannot be restored. This cannot be undone.',
     deletePersonaConfirmWithChats:

@@ -1,12 +1,13 @@
 import { ipcMain } from 'electron'
 import { createHash, randomBytes } from 'crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import {
   clearAvatarImage as clearAvatarImageFile,
   readAvatarImage as readAvatarImageFile,
   writeAvatarImage as writeAvatarImageFile
 } from './avatar-image'
+import { writeFileAtomic } from './atomic-write'
 import { getConfig, getDevaHome, setConfig } from './config'
 import { pruneRoles } from './ext-roles'
 import { setSkillEnabled } from './skills'
@@ -21,7 +22,7 @@ import { AUTO_SHAPE, legacyAutoShape } from '../../shared/avatar-shape'
  *
  * 定位（对标 ChatGPT「自定义指令」/ 人格 profile）：每条 persona 是一段命名的**附加系统提示词**
  * （性格、语气、行文风格、偏好等）。可多条并存、独立启停；**已启用**的会在每轮对话前**追加**进
- * 主智能体系统提示词（见 chat.ts `systemPrompt`）。与 skill/subagent 的启停模型一致（叠加，非单选）。
+ * 主智能体系统提示词（见 chat-prompts.ts `systemPrompt`）。与 skill/subagent 的启停模型一致（叠加，非单选）。
  *
  * 设计（照 agents.ts 裁剪，但更简单：**无 tools**——角色不收窄工具，全部工具按需可用）：
  * - **身份 = 文件名去扩展名（id），显示名 = frontmatter `name`**。文件名恒定不改（改显示名只重写
@@ -272,7 +273,7 @@ export function upsertPersona(input: PersonaUpsertInput): PersonaRecord {
 
   try {
     mkdirSync(personasDir(), { recursive: true })
-    writeFileSync(personaFile(id), md, 'utf8')
+    writeFileAtomic(personaFile(id), md)
   } catch {
     /* 写失败：返回内存态记录，UI 仍可用（下次可重试） */
   }
@@ -476,7 +477,7 @@ function refreshDefaultPrompt(
     : (LEGACY_PROMPT_HASHES[def.id] ?? []).includes(curHash)
   if (!untouched) return false
   try {
-    writeFileSync(personaFile(def.id), composePersonaMd({ ...cur, prompt: def.prompt }), 'utf8')
+    writeFileAtomic(personaFile(def.id), composePersonaMd({ ...cur, prompt: def.prompt }))
     return true
   } catch {
     return false // 写失败：不记基线，下次启动再试
