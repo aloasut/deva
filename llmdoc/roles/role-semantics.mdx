@@ -37,6 +37,7 @@ relations:
 - 种子幂等三守卫（`personas.ts`）：`seeded[id]` 防删除后复活；增量补种新角色；`seededPrompt[id]` 记录已种版本、升级换新不覆盖用户改动。
 - 启用态存 config.json 而非 .md frontmatter；头像图片是派生字段不入 frontmatter（`avatar-image.ts`）。
 - persona 注入**不得凌驾安全铁律**：注入外层有前言框定（这与 xiaomajiang 角色的拒绝抑制指令相互作用，见下）。
+- **默认工作区**（frontmatter `workspace`，2026-11-14）：只是新对话的默认值——主进程在 `chat:create-session` 从 persona 记录解析并 trustRoot（渲染层传值不采信，受信根边界不放宽），目录失效静默按未挂载建档；对话内挂/卸是会话级（chat:set-focus），不回写角色。propose_agent 名片创建的角色不带此字段。
 
 ## 子智能体关键语义
 
